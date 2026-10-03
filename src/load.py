@@ -46,7 +46,7 @@ PA_PER_BAR = 1e5
 INDEX_COLUMNS = [
     "instance_id", "well_id", "source", "event_class", "n_minutes",
     "minutes_normal", "minutes_forming", "minutes_established",
-] + [f"has_{s}" for s in SENSORS]
+] + [f"has_{s}" for s in SENSORS] + ["frozen_sensors"]
 
 log = logging.getLogger("frostline.load")
 
@@ -139,6 +139,11 @@ def load_well(parquet_path: str | os.PathLike) -> pd.DataFrame:
             raw[col] = np.nan
 
     sensors = raw[SENSORS].astype("float64")
+    # A sensor stuck at one value for the whole file (often 0.0) is dead, not
+    # data. These are far more common in normal files than hydrate files, so
+    # keeping them would let a model learn "frozen sensor = normal".
+    frozen = [c for c in SENSORS if sensors[c].nunique(dropna=True) == 1]
+    sensors[frozen] = np.nan
     sensors[PRESSURE_SENSORS] = sensors[PRESSURE_SENSORS] / PA_PER_BAR
     out = sensors.resample("1min").mean()
     for label in LABELS:
@@ -149,6 +154,7 @@ def load_well(parquet_path: str | os.PathLike) -> pd.DataFrame:
     out["class"] = out["class"].astype("Int64")
     out["state"] = out["state"].round().astype("Int64")
     out.index.name = "timestamp"
+    out.attrs["frozen_sensors"] = frozen
 
     out["instance_id"] = make_instance_id(path)
     out["well_id"] = well_id
@@ -176,6 +182,7 @@ def summarize_instance(df: pd.DataFrame, path: Path) -> dict:
     }
     for s in SENSORS:
         row[f"has_{s}"] = bool(df[s].notna().any())
+    row["frozen_sensors"] = ";".join(df.attrs.get("frozen_sensors", []))
     return row
 
 

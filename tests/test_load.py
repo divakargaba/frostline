@@ -99,6 +99,17 @@ class TestNaNHandling:
         for s in SENSORS:
             assert s in loaded.columns and f"has_{s}" in loaded.columns
 
+    def test_frozen_sensor_treated_as_missing(self, fake_3w_instance, tmp_path):
+        """A sensor stuck at one value for the whole file is dead -> NaN."""
+        df = fake_3w_instance.copy()
+        df["P-PDG"] = 0.0
+        df["QGL"] = 12.0
+        out = load_well(_write_raw(df, tmp_path, 0, INSTANCE))
+        assert out["P-PDG"].isna().all() and not out["has_P-PDG"].any()
+        assert out["QGL"].isna().all()
+        assert out["P-TPT"].notna().all()  # varying sensors untouched
+        assert out.attrs["frozen_sensors"] == ["P-PDG", "QGL"]
+
 
 class TestSourceParsing:
     def test_real_well_filename(self, loaded):
@@ -147,9 +158,12 @@ class TestBatch:
 
     def test_skip_existing_reuses_output(self, fake_3w_instance, tmp_path):
         raw, out = tmp_path / "raw", tmp_path / "processed"
-        _write_raw(fake_3w_instance, raw, 8, INSTANCE)
+        df = fake_3w_instance.copy()
+        df["QGL"] = 0.0
+        _write_raw(df, raw, 8, INSTANCE)
         load_all(str(raw), str(out), workers=1)
         mtime = (out / f"{INSTANCE}.parquet").stat().st_mtime_ns
         index = load_all(str(raw), str(out), workers=1, skip_existing=True)
         assert (out / f"{INSTANCE}.parquet").stat().st_mtime_ns == mtime
         assert len(index) == 1 and index["n_minutes"].iloc[0] == 5
+        assert index["frozen_sensors"].iloc[0] == "QGL"
