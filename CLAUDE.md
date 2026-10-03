@@ -254,6 +254,64 @@ Returns summary evaluation table rows for systems B0–M3.
 
 Request body: `{"text": "Hydrate alert on well 19."}` → Response: `audio/mpeg` binary.
 
+## Hackathon Context
+
+Reference files from the organizers' repo are in `context/hackathon/`. Source: [nagusubra/industry-hackathon-lab](https://github.com/nagusubra/industry-hackathon-lab), commit `c3fa12de`.
+
+### Files
+
+| File | What it is |
+|------|-----------|
+| [JUDGING_RUBRIC.md](context/hackathon/JUDGING_RUBRIC.md) | Scoring criteria, weights, and what judges look for |
+| [RULES.md](context/hackathon/RULES.md) | Team size, submission window, originality, public repo |
+| [SUBMISSIONS.md](context/hackathon/SUBMISSIONS.md) | How to submit, editing rules, deadline enforcement |
+| [submission.yml](context/hackathon/submission.yml) | GitHub Issue template — the exact form fields |
+| [DESIGN-DOC-TEMPLATE.md](context/hackathon/DESIGN-DOC-TEMPLATE.md) | SDD template: intro, system overview, architecture, backend, DB, external APIs, security, frontend, tech stack, testing |
+| [case9_README.md](context/hackathon/case9_README.md) | Case 9 challenge description |
+| [case9_data_README.md](context/hackathon/case9_data_README.md) | Seed data guide and 3W citation |
+| [CASE.md](context/hackathon/CASE.md) | Organizers' example case (scam-text scorer) — shows the style and depth they expect |
+| [fullstack-design-doc-tutorial.md](context/hackathon/fullstack-design-doc-tutorial.md) | Filled-in design doc for the example case — shows expected level of detail |
+| [fullstack-summary.md](context/hackathon/fullstack-summary.md) | One-page summary of the example project |
+| [LICENSE](context/hackathon/LICENSE) | Hackathon repo license |
+| [SOURCE.md](context/hackathon/SOURCE.md) | Provenance: repo URL and commit hash |
+
+### What Judges Score (from JUDGING_RUBRIC.md)
+
+- **30% Autonomous reasoning:** Data in → decision out. Show one improvement round vs a baseline (first result vs revised result after the software changed a threshold/weight). Simple diagram of the loop.
+- **20% Real industrial problem:** Clear problem statement, real end user (offshore operator), why it matters (lost production, safety). Bonus: mention a mentor/industry conversation.
+- **20% Execution & architecture:** Live working demo with real output (not slides). Clear architecture diagram showing data flow. Explain why this design and toolset.
+- **15% Commercialization:** Value proposition (who saves money/risk), pilot deployment plan, scalability story.
+- **15% Presentation:** Problem → why it matters → approach → live demo → result vs baseline → value. 5-min pitch + 3-min Q&A. Demo is the centerpiece.
+
+### Submission Form Fields (from submission.yml)
+
+1. **Team Name** (required)
+2. **Team Members + GitHub handles** (required, 2–5 members)
+3. **Project Stream** (required) — "Energy and Infrastructure Systems"
+4. **Project Title** (required)
+5. **Short Description / Tagline** (required, 3 lines max / ~280 chars)
+6. **About the Project** (required) — Inspiration, learnings, how built, challenges. Markdown + LaTeX.
+7. **Screenshots** (required) — min 2, max 5 images (PNG/JPG/GIF, 10 MB each)
+8. **Demo Video / Live Site Link** (optional but recommended) — YouTube unlisted or Loom
+9. **Additional Info** (optional) — Option B Case 9, dataset citations, sponsor tech (ElevenLabs)
+10. **Eligibility checkboxes** (required)
+
+**Hard deadline: Sunday Oct 4, 12:00 PM MDT sharp — no exceptions.** Window opens Fri Oct 2 5:00 PM MDT. One issue per team on `nagusubra/industry-hackathon-lab`.
+
+### Case 9 Official Challenge (from case9_README.md)
+
+The organizers' minimum bar: flag the bad hours, beat "always say normal" (B0), move the cutoff once (5th → 10th percentile), and report: events caught, false alarms, and when the rule fails. We go far beyond this with a full agentic pipeline, but the submission must clearly show these basics too.
+
+### Style Notes from the Example Case
+
+The example project (scam-text scorer) shows what organizers consider good:
+- **Design doc** follows the SDD template with filled Mermaid diagrams for system context, architecture, data flow, ER schema, and frontend flow.
+- **Summary** is a one-page bullet list: purpose, tech stack, design, flow, priorities, security, endpoints, models, evaluation, output, data, frontend flow, testing.
+- **Results** are presented as a before/after table (baseline → improved), with per-category breakdown and an honesty section about limitations.
+- **System thinking** is valued: stateless vs stateful features, latency budget, feedback loops, adversarial robustness, rollout plan.
+
+We should produce: a filled design doc, an architecture Mermaid diagram, a results table (B0–M3), per-event breakdown, and an honesty/limitations section.
+
 ## Commands
 
 ```bash
