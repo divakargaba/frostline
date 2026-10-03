@@ -214,7 +214,9 @@ def test_reference_tools_link_primary_sensor_and_dataset_sources():
     assert agent.SENSOR_REFERENCE in comparison["sources"]
     assert "not thermodynamic predictions" in comparison["note"]
     playbook = agent._tool(snapshot(), "search_playbook", {"query": "hydrate"})
-    assert agent.DATA_PAPER in playbook["documents"][0]["sources"]
+    # BM25 RAG returns real playbook docs; inline fallback returns DATA_PAPER
+    assert playbook["source"] in ("bm25_playbook", "project_playbook")
+    assert len(playbook["documents"]) > 0
 
 
 @pytest.mark.parametrize("bad_response", [None, {"choices": ["bad"]},

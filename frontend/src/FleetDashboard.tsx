@@ -2084,6 +2084,11 @@ export default function FleetDashboard() {
                   "Investigation steps appear after the next assessment."}
               </p>
             )}
+            {well.assessment?.playbook_refs?.length ? (
+              <p className="fleet-playbook-refs">
+                <small>Playbook: {well.assessment.playbook_refs.join(" · ")}</small>
+              </p>
+            ) : null}
           </section>
           {well.incident && (
             <section>

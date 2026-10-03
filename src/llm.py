@@ -495,3 +495,80 @@ def reset_provider_pool():
 
 # Keep OpenRouterClient as alias for backward compatibility
 OpenRouterClient = OpenAICompatClient
+
+
+# ---------------------------------------------------------------------------
+# Fleet transport adapter — wraps ProviderPool for Mico's investigate()
+# ---------------------------------------------------------------------------
+
+def make_fleet_transport():
+    """Return an async transport function for fleet_llm.investigate().
+
+    Uses our ProviderPool (Gemini -> Groq -> OpenRouter) and converts
+    the LLMResponse back to the raw OpenAI response dict that investigate expects.
+    Falls back to None if no providers are configured (investigate will use
+    its own deterministic fallback).
+    """
+    from backend.config import LLM_MODE
+    if LLM_MODE == "mock":
+        return None  # let fleet_llm use its own deterministic fallback
+
+    pool = _get_or_build_pool()
+    if pool is None or not any(not p.disabled for p in pool.providers):
+        return None
+
+    async def transport(payload, timeout):
+        """Adapter: translate between fleet_llm payload format and our pool."""
+        import asyncio
+        messages = payload.get("messages", [])
+        tools = payload.get("tools")
+        tool_choice = payload.get("tool_choice", "auto")
+        temperature = payload.get("temperature", 0)
+        max_tokens = payload.get("max_tokens", 1800)
+
+        loop = asyncio.get_event_loop()
+        resp = await loop.run_in_executor(
+            None,
+            lambda: pool.chat(
+                messages=messages,
+                tools=tools,
+                tool_choice=tool_choice if isinstance(tool_choice, str) else "auto",
+                temperature=temperature,
+                max_tokens=max_tokens,
+            ),
+        )
+
+        if resp.model in ("exhausted", "disabled"):
+            from src.fleet_llm import ProviderFailure
+            raise ProviderFailure(503, 0, False)
+
+        # Convert LLMResponse -> raw OpenAI dict for fleet_llm
+        tool_calls_raw = []
+        for tc in resp.tool_calls:
+            tool_calls_raw.append({
+                "id": tc.id,
+                "type": "function",
+                "function": {
+                    "name": tc.name,
+                    "arguments": json.dumps(tc.arguments) if isinstance(tc.arguments, dict) else tc.arguments,
+                },
+            })
+
+        return {
+            "model": resp.model,
+            "choices": [{
+                "message": {
+                    "content": resp.content,
+                    "tool_calls": tool_calls_raw or None,
+                },
+                "finish_reason": "tool_calls" if tool_calls_raw else "stop",
+            }],
+            "usage": {
+                "prompt_tokens": resp.usage.get("prompt_tokens", 0),
+                "completion_tokens": resp.usage.get("completion_tokens", 0),
+                "cost": 0,
+            },
+            "id": f"pool-{resp.provider}-{int(time.time())}",
+        }
+
+    return transport

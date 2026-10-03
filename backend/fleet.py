@@ -532,7 +532,10 @@ class FleetSession:
                 self.audit.append({"kind": "assessment", "well_id": well, "snapshot_revision": revision, "result": safe(item["assessment"]), "llm_deferred": True})
                 self.publish("assessment")
                 return
-            result = await investigate(snapshot, emit, reserve_attempt=self.reserve_attempt)
+            # Use Div's provider pool (Gemini -> Groq -> OpenRouter) if available
+            from src.llm import make_fleet_transport
+            transport = make_fleet_transport()
+            result = await investigate(snapshot, emit, transport=transport, reserve_attempt=self.reserve_attempt)
             metadata = result.get("metadata", {})
             if metadata.get("account_limited"):
                 PROVIDER_CIRCUIT.update(until=time.monotonic() + 300, reason="Provider account rate limit; automatic reviews are temporarily paused.")

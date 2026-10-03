@@ -155,6 +155,18 @@ def _tool(snap, name, args):
     if name == "search_playbook":
         if set(args) != {"query"} or not isinstance(args["query"], str) or not 1 <= len(args["query"]) <= 200:
             raise ValueError("A short playbook query is required")
+        # Try BM25 RAG (14 verified docs) first, fall back to inline entries
+        try:
+            from src.rag import search as rag_search
+            hits = rag_search(args["query"], top_k=2)
+            if hits:
+                return {"available": True, "source": "bm25_playbook", "documents": [
+                    {"id": h["id"], "title": h["title"], "text": h["snippet"], "sources": h.get("sources", [])}
+                    for h in hits
+                ], "note": "Project review guidance, not an approved site operating procedure."}
+        except Exception:
+            pass
+        # Fallback: inline entries
         terms = set(re.findall(r"[a-z]+", args["query"].lower()))
         hits = sorted(PLAYBOOK, key=lambda p: -len(terms.intersection(re.findall(r"[a-z]+", (p["title"] + " " + p["text"]).lower()))))
         return {"available": True, "source": "project_playbook", "documents": hits[:2],
@@ -190,6 +202,7 @@ ASSESSMENT_SCHEMA = {"type": "object", "additionalProperties": False, "propertie
     "evidence_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 8},
     "alternative": {"type": "string", "maxLength": 180},
     "missing_evidence": {"type": "array", "items": {"type": "string"}, "maxItems": 8},
+    "playbook_refs": {"type": "array", "items": {"type": "string"}, "maxItems": 4},
 }, "required": ["status", "diagnosis", "brief", "action", "recheck_minutes", "evidence_ids", "alternative", "missing_evidence"]}
 
 
@@ -263,7 +276,8 @@ def _telemetry_signal(snap):
 
 def _validate(candidate, evidence, snap):
     expected = set(ASSESSMENT_SCHEMA["required"])
-    if not isinstance(candidate, dict) or set(candidate) != expected:
+    optional = {"playbook_refs"}
+    if not isinstance(candidate, dict) or not expected.issubset(set(candidate)) or set(candidate) - expected - optional:
         raise ValueError("Final assessment fields do not match the schema")
     if candidate["status"] not in STATUSES or candidate["diagnosis"] not in DIAGNOSES or candidate["action"] not in ACTION_TEXT:
         raise ValueError("Unsupported assessment category")
@@ -315,6 +329,7 @@ def _validate(candidate, evidence, snap):
             "next_action": ACTION_TEXT[candidate["action"]], "action": candidate["action"],
             "recheck_minutes": candidate["recheck_minutes"], "alternative": candidate["alternative"],
             "missing_evidence": missing, "evidence": [{"id": e["id"], "tool": e["tool"], "summary": _summary(e["tool"], e["result"])} for e in selected],
+            "playbook_refs": candidate.get("playbook_refs") or _extract_playbook_refs(evidence),
             "source": "live_llm"}
 
 
@@ -330,6 +345,18 @@ def _summary(tool, result):
             "fleet_summary": "Reviewed other wells' current conditions."}.get(tool, "Reviewed tool result.")
 
 
+def _extract_playbook_refs(evidence):
+    """Extract playbook doc IDs from search_playbook evidence."""
+    refs = []
+    for e in evidence.values():
+        if e.get("tool") == "search_playbook":
+            for doc in e.get("result", {}).get("documents", []):
+                doc_id = doc.get("id", "")
+                if doc_id and doc_id not in refs:
+                    refs.append(doc_id)
+    return refs
+
+
 def _fallback(snap, reason, evidence):
     quality = _quality(snap)
     current = snap.get("severity", "watch")
@@ -342,6 +369,7 @@ def _fallback(snap, reason, evidence):
             "recheck_minutes": 1 if status in {"telemetry", "attention"} else 5,
             "alternative": "The available evidence does not confirm a physical cause.",
             "missing_evidence": [reason], "source": "model_fallback" if model_available else "rules_fallback",
+            "playbook_refs": _extract_playbook_refs(evidence),
             "evidence": [{"id": e["id"], "tool": e["tool"], "summary": _summary(e["tool"], e["result"])} for e in evidence.values()]}
 
 
