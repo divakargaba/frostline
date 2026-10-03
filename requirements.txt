@@ -8,8 +8,11 @@ uvicorn
 sse-starlette
 python-dotenv
 rank_bm25
+pyyaml
 anthropic
 openai
 requests
 matplotlib
 pytest
+pytest-asyncio
+httpx
