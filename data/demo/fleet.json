@@ -1,6 +1,7 @@
 {
   "description": "Historical fleet replay with 4 wells, illustrative locations in Campos Basin.",
   "window_minutes": 180,
+  "demo_recording": "fleet_20261003-144206.jsonl",
   "wells": [
     {
       "display_id": "Alpha-1",
