@@ -137,6 +137,25 @@ def _build_rule_fallback(ctx: AgentContext, tool_results: dict[str, dict]) -> di
         evidence.append({"tool": "hydrate_margin", "summary": f"margin={margin_c}C ({margin.get('status', 'unknown')})"})
         brief_parts.append(f"Subcooling margin: {margin_c}C.")
 
+    # Playbook refs from search results
+    playbook_refs = []
+    if playbook.get("available"):
+        for r in playbook.get("results", []):
+            if r.get("id"):
+                playbook_refs.append(r["id"])
+
+    # Check for scaling pattern: pressure rise in get_window with stable temperature
+    window = tool_results.get("get_window", {})
+    is_pressure_rise = False
+    if window.get("available"):
+        slopes = window.get("slopes", {})
+        # P-MON-CKP rising while T-TPT stable = scaling signature
+        p_mon_slope = slopes.get("P-MON-CKP_slope_60min") or slopes.get("P-MON-CKP_slope_30min")
+        t_tpt_slope = slopes.get("T-TPT_slope_60min") or slopes.get("T-TPT_slope_30min")
+        if p_mon_slope is not None and p_mon_slope > 0.005:
+            if t_tpt_slope is None or abs(t_tpt_slope) < 0.01:
+                is_pressure_rise = True
+
     # Decision logic
     if p_h >= 0.6 or (margin_c is not None and margin_c < 0):
         decision = "ALERT"
@@ -146,10 +165,15 @@ def _build_rule_fallback(ctx: AgentContext, tool_results: dict[str, dict]) -> di
         decision = "WATCH"
         confidence = 0.5
         diagnosis = "hydrate_production_line"
-    elif p_l >= 0.4:
+    elif is_pressure_rise or p_l >= 0.4:
         decision = "DISMISS"
-        confidence = 0.6
-        diagnosis = "scaling" if p_l > p_h else "normal"
+        confidence = 0.65
+        diagnosis = "scaling"
+        if is_pressure_rise:
+            evidence.append({"tool": "get_window", "summary": "P-MON-CKP rising, T-TPT stable — scaling pattern"})
+        brief_parts.append("Upstream pressure rising with stable temperature — consistent with scaling, not hydrate.")
+        if "scaling_vs_hydrate" not in playbook_refs:
+            playbook_refs.append("scaling_vs_hydrate")
     else:
         decision = "DISMISS"
         confidence = 0.7
@@ -160,13 +184,6 @@ def _build_rule_fallback(ctx: AgentContext, tool_results: dict[str, dict]) -> di
 
     if forecast.get("available"):
         evidence.append({"tool": "forecast_onset", "summary": f"p50={onset.get('p50')} min"})
-
-    # Playbook refs from search results
-    playbook_refs = []
-    if playbook.get("available"):
-        for r in playbook.get("results", []):
-            if r.get("id"):
-                playbook_refs.append(r["id"])
 
     return {
         "decision": decision,
@@ -223,6 +240,18 @@ def _check_traceability(decision: dict, tool_results: dict[str, dict]) -> bool:
     return True
 
 
+def _playbook_query(trigger: dict) -> str:
+    """Build a relevant playbook search query from the trigger reason."""
+    reason = trigger.get("reason", "")
+    if "P_MON_CKP" in reason and "rose" in reason:
+        return "scaling vs hydrate pressure rise choke restriction"
+    elif "p_lookalike" in reason:
+        return "scaling flow instability look-alike vs hydrate"
+    elif "dropped" in reason or "p_hydrate" in reason:
+        return "hydrate alert response inhibitor injection"
+    return "hydrate early warning signs detection"
+
+
 def run_agent(ctx: AgentContext, trigger: dict,
               cache_only: bool = False) -> Generator[dict, None, None]:
     """Run the two-round agent loop. Yields tool_call, tool_result, decision events.
@@ -273,20 +302,27 @@ def run_agent(ctx: AgentContext, trigger: dict,
     max_requests = LLM_MAX_REQUESTS_PER_RUN
     n_tool_calls = 0
 
-    # --- Round 0: Pre-run get_window and classify_event ---
-    pre_run_tools = ["get_window", "classify_event"]
+    # --- Round 0: Pre-run ALL standard tools ---
+    # Pre-run everything the LLM typically needs so it can decide in 1 request.
+    pre_run_specs = [
+        ("get_window", {"minutes": 60}),
+        ("classify_event", {}),
+        ("hydrate_margin", {}),
+        ("forecast_onset", {}),
+        ("methanol_dose", {}),
+        ("search_playbook", {"query": _playbook_query(trigger)}),
+    ]
     pre_run_summary = []
 
-    for tool_name in pre_run_tools:
-        result = dispatch_tool(tool_name, ctx, {} if tool_name != "get_window" else {"minutes": 60})
+    for tool_name, args in pre_run_specs:
+        result = dispatch_tool(tool_name, ctx, args)
         tool_results[tool_name] = result
         n_tool_calls += 1
 
         tc_evt = {
             "type": "tool_call",
             "data": {"t": t, "call_id": f"sys_{tool_name}", "tool": tool_name,
-                     "args": {"minutes": 60} if tool_name == "get_window" else {},
-                     "requested_by": "system"},
+                     "args": args, "requested_by": "system"},
         }
         tr_evt = {
             "type": "tool_result",
@@ -299,17 +335,18 @@ def run_agent(ctx: AgentContext, trigger: dict,
 
         pre_run_summary.append(f"[{tool_name}] {json.dumps(result)}")
 
-    # --- Round 1: Send pre-run results to LLM, ask for additional tools ---
+    # --- Round 1: Send all pre-run results to LLM for decision ---
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": (
             f"A watcher trigger fired for well {ctx.well_id} at {t}. "
             f"Reason: {trigger.get('reason', 'unknown')}. "
             f"Score: {trigger.get('score', 0)}.\n\n"
-            f"Pre-run tool results (already executed by the system):\n"
+            f"All standard tools have been pre-run by the system:\n"
             + "\n".join(pre_run_summary) + "\n\n"
-            f"If you need more tools, request them ALL now in one response (parallel tool calls). "
-            f"Otherwise, provide your final JSON decision."
+            f"Provide your final JSON decision based on the evidence above. "
+            f"If you absolutely need another tool not listed above, you may request it, "
+            f"but in most cases the evidence is sufficient."
         )},
     ]
 

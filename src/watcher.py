@@ -32,8 +32,10 @@ class WatcherState:
     recheck_at_minute: int | None = None
     # Consecutive high-score minutes
     consecutive_high: int = 0
-    # Pressure history for fallback (last 30 readings)
-    pressure_history: deque = field(default_factory=lambda: deque(maxlen=30))
+    # Pressure history for fallback (60-min window, bidirectional)
+    pressure_history: deque = field(default_factory=lambda: deque(maxlen=60))
+    # P-MON-CKP history (60-min window, for upstream pressure changes)
+    pressure_mon_history: deque = field(default_factory=lambda: deque(maxlen=60))
 
     thresholds: dict = field(default_factory=load_thresholds)
 
@@ -72,11 +74,14 @@ class Watcher:
         th = st.thresholds
         cooldown = th.get("cooldown_min", DEFAULT_THRESHOLDS["cooldown_min"])
 
-        # Track pressure for fallback
+        # Track pressures for fallback (bidirectional)
         sensors = tick.get("sensors", {})
         p_tpt = sensors.get("P_TPT_bar") or sensors.get("P-TPT")
         if p_tpt is not None and isinstance(p_tpt, (int, float)):
             st.pressure_history.append(p_tpt)
+        p_mon = sensors.get("P_MON_CKP_bar") or sensors.get("P-MON-CKP")
+        if p_mon is not None and isinstance(p_mon, (int, float)):
+            st.pressure_mon_history.append(p_mon)
 
         # Check if we're in recheck mode
         is_recheck = (st.recheck_at_minute is not None and minute_index >= st.recheck_at_minute)
@@ -115,17 +120,38 @@ class Watcher:
                 score = max(score, 0.7)
                 reason = reason or f"margin_C={margin:.1f} below equilibrium (danger)"
 
-        # --- Condition 3: Pressure drop fallback (no model, no physics) ---
+        # --- Condition 3: Pressure change fallback (no model, no physics) ---
+        # Bidirectional: fires on both rises and drops in P-TPT or P-MON-CKP
         if p_hydrate is None and margin is None:
-            drop_th = th.get("pressure_drop_bar_30min", DEFAULT_THRESHOLDS["pressure_drop_bar_30min"])
+            # P-TPT bidirectional check
+            change_th = th.get("pressure_drop_bar_30min", DEFAULT_THRESHOLDS["pressure_drop_bar_30min"])
             if len(st.pressure_history) >= 10:
-                # Detect a sustained pressure DROP over the window
                 p_start = st.pressure_history[0]
                 p_end = st.pressure_history[-1]
-                p_drop = p_start - p_end  # positive = pressure fell
-                if p_drop >= drop_th:
+                p_change = abs(p_end - p_start)
+                if p_change >= change_th:
+                    direction = "rose" if p_end > p_start else "dropped"
                     score = max(score, 0.5)
-                    reason = reason or f"Pressure fallback: P_TPT dropped {p_drop:.1f} bar over {len(st.pressure_history)} min"
+                    reason = reason or f"Pressure fallback: P_TPT {direction} {p_change:.1f} bar over {len(st.pressure_history)} min"
+
+            # P-MON-CKP bidirectional check (lower threshold for upstream gauge)
+            mon_th = th.get("pressure_mon_change_bar_60min", DEFAULT_THRESHOLDS["pressure_mon_change_bar_60min"])
+            if len(st.pressure_mon_history) >= 30:
+                pm_start = st.pressure_mon_history[0]
+                pm_end = st.pressure_mon_history[-1]
+                pm_change = abs(pm_end - pm_start)
+                if pm_change >= mon_th:
+                    direction = "rose" if pm_end > pm_start else "dropped"
+                    score = max(score, 0.45)
+                    reason = reason or f"Pressure fallback: P_MON_CKP {direction} {pm_change:.1f} bar over {len(st.pressure_mon_history)} min"
+
+        # --- Condition 4: Look-alike probability (when model exists) ---
+        p_lookalike = tick.get("p_lookalike")
+        if p_lookalike is not None and not (isinstance(p_lookalike, float) and np.isnan(p_lookalike)):
+            la_th = th.get("lookalike_threshold", DEFAULT_THRESHOLDS["lookalike_threshold"])
+            if p_lookalike >= la_th:
+                score = max(score, 0.45)
+                reason = reason or f"p_lookalike={p_lookalike:.2f} >= {la_th}"
 
         # --- Recheck trigger ---
         if is_recheck and score < 0.3:

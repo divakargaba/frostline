@@ -58,6 +58,47 @@ class TestTrigger:
             result = w.check_tick(tick, "WELL-00019", i)
         assert result is None
 
+    def test_fallback_pressure_rise_triggers(self):
+        """Bidirectional: pressure RISE should also trigger fallback."""
+        w = Watcher()
+        for i in range(15):
+            p = 270.0 + i * (10.0 / 14)  # rises from 270 to 280
+            tick = {"t": f"2024-01-07T08:{i:02d}", "p_hydrate": None, "margin_C": None,
+                    "sensors": {"P_TPT_bar": p}}
+            result = w.check_tick(tick, "WELL-00019", i)
+        assert result is not None
+        assert "rose" in result["reason"]
+
+    def test_fallback_p_mon_ckp_rise_triggers(self):
+        """P-MON-CKP sustained rise above threshold triggers fallback."""
+        w = Watcher()
+        for i in range(35):
+            # P-MON-CKP rises 1.0 bar over 35 min (above 0.8 threshold)
+            pm = 52.0 + i * (1.0 / 34)
+            tick = {"t": f"2024-01-07T08:{i:02d}", "p_hydrate": None, "margin_C": None,
+                    "sensors": {"P_MON_CKP_bar": pm}}
+            result = w.check_tick(tick, "WELL-00019", i)
+        assert result is not None
+        assert "P_MON_CKP" in result["reason"]
+
+    def test_no_fallback_p_mon_ckp_stable(self):
+        """Stable P-MON-CKP should not trigger."""
+        w = Watcher()
+        for i in range(35):
+            tick = {"t": f"2024-01-07T08:{i:02d}", "p_hydrate": None, "margin_C": None,
+                    "sensors": {"P_MON_CKP_bar": 52.0}}
+            result = w.check_tick(tick, "WELL-00019", i)
+        assert result is None
+
+    def test_lookalike_threshold_triggers(self):
+        """p_lookalike above threshold should trigger."""
+        w = Watcher()
+        tick = {"t": "2024-01-07T08:00", "p_hydrate": None, "margin_C": None,
+                "p_lookalike": 0.65, "sensors": {}}
+        result = w.check_tick(tick, "WELL-00019", 0)
+        assert result is not None
+        assert "p_lookalike" in result["reason"]
+
 
 class TestCooldown:
     def test_cooldown_prevents_retrigger(self):

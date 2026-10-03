@@ -22,30 +22,22 @@
   ],
   "look_alike": [
     {
-      "instance_id": "seed",
-      "well_id": "SEED",
-      "event_class": "seed (synthetic hydrate)",
-      "demo_from_minute": 80,
-      "demo_to_minute": 110,
-      "trigger_minute": 94,
-      "expected_decision": "DISMISS",
-      "reasons": [
-        "Pressure noise dip during normal phase (281 -> 275 bar, recovers)",
-        "Temperature stable around 84-86C, no sustained drop",
-        "Heuristic classifier should give low hydrate probability",
-        "Demonstrates false-alarm rejection"
-      ]
-    },
-    {
-      "instance_id": "WELL-00001_20170226130146",
-      "well_id": "WELL-00001",
+      "instance_id": "WELL-00006_20180618103000",
+      "well_id": "WELL-00006",
       "event_class": 7,
-      "demo_note": "Real scaling event. Watcher correctly does NOT trigger because scaling causes pressure INCREASE, not drop. This validates watcher specificity.",
+      "demo_from_minute": 30,
+      "demo_to_minute": 340,
+      "trigger_minute": 279,
+      "expected_decision": "DISMISS",
+      "actual_decision": "DISMISS",
+      "diagnosis": "scaling",
       "reasons": [
-        "563 min normal lead-in, 639 min forming, 16 min established",
-        "P-MON-CKP increases 5% during event (upstream restriction)",
-        "Temperature stable — no hydrate signature",
-        "Watcher does not trigger = correct behavior"
+        "Real scaling event (class 7) from 3W dataset",
+        "90 min normal lead-in, 1992 min forming, 55 min established",
+        "P-MON-CKP rises 0.8+ bar over 60 min during forming (watcher trigger)",
+        "Temperature stable (118.2C) — no hydrate signature",
+        "Agent correctly identifies scaling pattern and returns DISMISS",
+        "Playbook refs: scaling_vs_hydrate, choke_flow_instability"
       ]
     }
   ]
