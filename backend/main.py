@@ -2,16 +2,26 @@
 
 Owner: Div
 
-Routes:
+Routes (Div's pipeline):
   - GET  /health         — System health + capabilities
   - GET  /wells          — List available wells/instances
   - GET  /stream/{id}    — SSE stream of events for a well
   - GET  /results        — Evaluation results table
   - POST /tts            — Text-to-speech stub
+  - POST /fleet/sessions — Create fleet replay session
+  - GET  /fleet/sessions/{id}/stream — Fleet SSE stream
+
+Routes (Mico's research + fleet):
+  - /api/fleet/*         — Four-well guided demo (backend/fleet.py router)
+  - /api/live/*          — Live agent sessions (backend/live.py router)
+  - /api/health          — Research health check
+  - /api/research        — Research results
+  - /api/scenarios       — Replay scenario list
 """
 from __future__ import annotations
 
 import asyncio
+from functools import lru_cache
 import json
 import logging
 import time
@@ -21,6 +31,8 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from sse_starlette.sse import EventSourceResponse
 
 import backend.config as config
@@ -32,16 +44,23 @@ from backend.replay import list_available_instances, load_demo_recording, load_i
 from backend.schemas import (
     EndEvent, ErrorEvent, HealthResponse, PhaseMarkerEvent, ResultsResponse,
     TickEvent, TTSRequest, WellInfo,
-    FleetSessionCreate, FleetSessionResponse, AckRequest, AckResponse,
 )
+
+# Mico's routers
+from backend.live import router as live_router
+from backend.fleet import router as fleet_router, capabilities as fleet_capabilities
 
 log = logging.getLogger("frostline.api")
 
-app = FastAPI(title="Frostline", version="0.1.0")
+app = FastAPI(title="Frostline", version="0.2.0")
+
+# Include Mico's routers (at /api/fleet and /api/live — no overlap with Div's /fleet/*)
+app.include_router(live_router)
+app.include_router(fleet_router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ORIGINS,
+    allow_origins=CORS_ORIGINS + ["http://127.0.0.1:5173", "http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -93,6 +112,10 @@ def _llm_mode() -> str:
         return "openrouter"
     return "mock"
 
+
+# ---------------------------------------------------------------------------
+# Div's routes
+# ---------------------------------------------------------------------------
 
 @app.get("/health")
 async def health():
@@ -332,116 +355,107 @@ async def text_to_speech(req: TTSRequest):
 
 
 # ---------------------------------------------------------------------------
-# Fleet endpoints
+# Fleet endpoints — Mico's router at /api/fleet handles the full fleet demo.
+# Div's old /fleet/* endpoints are retired (replaced by Mico's architecture).
 # ---------------------------------------------------------------------------
 
-@app.post("/fleet/sessions")
-async def create_fleet_session(body: FleetSessionCreate):
-    """Create a new fleet replay session."""
-    from backend.fleet import create_session
-    try:
-        session = create_session(
-            speed=body.speed,
-            agent=body.agent,
-            mode=body.mode,
-            record=body.record,
-        )
-    except ValueError as e:
-        raise HTTPException(400, str(e))
 
-    return FleetSessionResponse(
-        session_id=session.session_id,
-        n_wells=len(session.wells),
-        max_minutes=session.max_minutes,
-        mode=session.mode,
+# ---------------------------------------------------------------------------
+# Mico's research routes
+# ---------------------------------------------------------------------------
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+@lru_cache(maxsize=1)
+def seed_report():
+    from src.research import experiment
+    return experiment()
+
+
+@lru_cache(maxsize=1)
+def seed_replays():
+    from src.research import seed_scenarios
+    return seed_scenarios(seed_report())
+
+
+def real_report():
+    path = ROOT / "data/processed/research/real_report.json"
+    return json.loads(path.read_text()) if path.exists() else {
+        "status": "not_run",
+        "message": "Run python scripts/fetch_research_data.py then python -m src.real_pilot to reproduce the 3W pilot.",
+    }
+
+
+@lru_cache(maxsize=2)
+def read_real_replays(mtime):
+    return json.loads((ROOT / "data/processed/research/real_replays.json").read_text())
+
+
+def scenarios():
+    path = ROOT / "data/processed/research/real_replays.json"
+    return {**seed_replays(), **(read_real_replays(path.stat().st_mtime_ns) if path.exists() else {})}
+
+
+@app.get("/api/health")
+def api_health():
+    return {
+        "status": "ok",
+        "mode": "local research replay",
+        "real_pilot": real_report()["status"],
+        "fleet": fleet_capabilities(),
+    }
+
+
+@app.get("/api/research")
+def api_research():
+    return {**seed_report(), "real": real_report()}
+
+
+@app.get("/api/research/export")
+def export_results():
+    return Response(
+        json.dumps(api_research(), indent=2, allow_nan=False),
+        media_type="application/json",
+        headers={"Content-Disposition": 'attachment; filename="frostline-research-results.json"'},
     )
 
 
-@app.post("/fleet/sessions/{session_id}/pause")
-async def pause_fleet_session(session_id: str):
-    from backend.fleet import get_session
-    session = get_session(session_id)
-    if session is None:
-        raise HTTPException(404, f"Session '{session_id}' not found")
-    session.paused = True
-    return {"session_id": session_id, "paused": True}
+@app.post("/api/experiments/run")
+def run_experiment():
+    seed_report.cache_clear()
+    seed_replays.cache_clear()
+    return api_research()
 
 
-@app.post("/fleet/sessions/{session_id}/resume")
-async def resume_fleet_session(session_id: str):
-    from backend.fleet import get_session
-    session = get_session(session_id)
-    if session is None:
-        raise HTTPException(404, f"Session '{session_id}' not found")
-    session.paused = False
-    return {"session_id": session_id, "paused": False}
+@app.get("/api/scenarios")
+def list_scenarios():
+    return [
+        {k: v for k, v in item.items() if k not in ["frames", "policy"]}
+        | {"frame_count": len(item["frames"])}
+        for item in scenarios().values()
+    ]
 
 
-@app.get("/fleet/sessions/{session_id}/stream")
-async def stream_fleet_session(request: Request, session_id: str):
-    """SSE stream for a fleet session."""
-    from backend.fleet import get_session, run_fleet_stream, _make_status_event
-
-    session = get_session(session_id)
-    if session is None:
-        raise HTTPException(404, f"Session '{session_id}' not found")
-
-    queue: asyncio.Queue = asyncio.Queue(maxsize=500)
-    session.subscribers.append(queue)
-
-    # Start the replay loop if not already running
-    if session.current_minute == 0 and not session.finished:
-        asyncio.create_task(run_fleet_stream(session, queue))
-
-    async def _generate():
-        event_id = 0
-        try:
-            # Catch-up: send current status
-            status = _make_status_event(session)
-            event_id += 1
-            yield {
-                "event": "fleet_status",
-                "id": str(event_id),
-                "data": json.dumps(status.model_dump()),
-            }
-
-            while not session.finished:
-                if await request.is_disconnected():
-                    break
-                try:
-                    evt = await asyncio.wait_for(queue.get(), timeout=1.0)
-                    event_id += 1
-                    yield {
-                        "event": evt["type"],
-                        "id": str(event_id),
-                        "data": json.dumps(evt["data"]),
-                    }
-                except asyncio.TimeoutError:
-                    continue
-
-            # Drain remaining events
-            while not queue.empty():
-                evt = queue.get_nowait()
-                event_id += 1
-                yield {
-                    "event": evt["type"],
-                    "id": str(event_id),
-                    "data": json.dumps(evt["data"]),
-                }
-        finally:
-            if queue in session.subscribers:
-                session.subscribers.remove(queue)
-
-    return EventSourceResponse(_generate())
+@app.get("/api/scenarios/{scenario_id}")
+def get_scenario(scenario_id: str):
+    found = scenarios().get(scenario_id)
+    if found is None:
+        raise HTTPException(404, "Unknown replay scenario")
+    return found
 
 
-@app.post("/fleet/sessions/{session_id}/incidents/{incident_id}/ack")
-async def ack_fleet_incident(session_id: str, incident_id: str):
-    from backend.fleet import get_session, acknowledge_incident
-    session = get_session(session_id)
-    if session is None:
-        raise HTTPException(404, f"Session '{session_id}' not found")
-    result = acknowledge_incident(session, incident_id)
-    if result is None:
-        raise HTTPException(404, f"Incident '{incident_id}' not found")
-    return result
+# ---------------------------------------------------------------------------
+# Static frontend (Mico's built dashboard)
+# ---------------------------------------------------------------------------
+
+DIST = ROOT / "frontend/dist"
+if (DIST / "assets").exists():
+    app.mount("/assets", StaticFiles(directory=DIST / "assets"), name="assets")
+
+
+@app.get("/dashboard", include_in_schema=False)
+def dashboard():
+    if not (DIST / "index.html").exists():
+        raise HTTPException(503, "Build the dashboard: cd frontend; npm ci; npm run build")
+    return FileResponse(DIST / "index.html")

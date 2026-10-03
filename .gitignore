@@ -32,3 +32,6 @@ logs/
 # Artifacts
 *.parquet
 *.pkl
+*.tsbuildinfo
+.pytest_cache/
+logs/

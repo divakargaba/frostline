@@ -1,76 +1,26 @@
-"""Evaluation harness — baselines vs agent.
-
-Owner: Physics+Eval
-
-Compares the hydrate-detection agent against simple baselines
-(threshold-only, ML-only, physics-only) on the 3W test set.
-
-Metrics:
-  - Lead time (minutes before established-hydrate phase)
-  - False alarms per day
-  - Misdiagnosis rate (wrong event class)
-
-TODO:
-  - Implement baseline runners
-  - Implement agent runner with replay
-  - Compute and tabulate metrics
-  - Generate comparison plots
-"""
-
-import pandas as pd
+"""Reproduce the frozen seed experiment; optionally run the real 3W pilot."""
+import argparse
+import json
+from src.research import ROOT, experiment
 
 
-def run_baseline_threshold(test_df: pd.DataFrame) -> pd.DataFrame:
-    """Run a simple threshold-based baseline on the test set.
-
-    Args:
-        test_df: Test dataframe with sensor readings and labels.
-
-    Returns:
-        DataFrame with columns [well_id, timestamp, prediction, label].
-    """
-    raise NotImplementedError
-
-
-def run_baseline_ml_only(test_df: pd.DataFrame) -> pd.DataFrame:
-    """Run ML-only baseline (no physics, no agent) on the test set.
-
-    Args:
-        test_df: Test dataframe with sensor readings and labels.
-
-    Returns:
-        DataFrame with columns [well_id, timestamp, prediction, label].
-    """
-    raise NotImplementedError
-
-
-def run_agent(test_df: pd.DataFrame) -> pd.DataFrame:
-    """Replay the full agent pipeline on the test set.
-
-    Args:
-        test_df: Test dataframe with sensor readings and labels.
-
-    Returns:
-        DataFrame with columns [well_id, timestamp, decision, label, tool_calls].
-    """
-    raise NotImplementedError
-
-
-def compute_metrics(results_df: pd.DataFrame) -> dict:
-    """Compute lead time, false alarms/day, and misdiagnosis rate.
-
-    Args:
-        results_df: Results from a baseline or agent run.
-
-    Returns:
-        Dict with keys: lead_time_min, false_alarms_per_day, misdiagnosis_rate.
-    """
-    raise NotImplementedError
-
-
-def main() -> None:
-    """Run all baselines and the agent, then print comparison table."""
-    raise NotImplementedError
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--real", action="store_true", help="Also run grouped real-well evaluation (download first)")
+    args = parser.parse_args()
+    report = experiment()
+    out = ROOT / "data/processed/research"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "seed_report.json").write_text(json.dumps(report, indent=2, allow_nan=False))
+    print("Frozen final test: Jan 21-30; detection delay is AFTER the label onset.")
+    print(f"{'System':34} {'Bad hours':>10} {'FP hours':>10} {'Delay(h)':>10}")
+    for system in report["systems"]:
+        m = system["test"]
+        print(f"{system['name']:34} {m['true_positive']:>7}/{m['bad_hours']:<2} {m['false_positive']:>10} {str(m['delay_hours']):>10}")
+    print(f"Policy: {report['policy_id']} | selection: {report['selection']['selected_trial']}/24 | 1 test incident")
+    if args.real:
+        from src.real_pilot import run
+        run()
 
 
 if __name__ == "__main__":
