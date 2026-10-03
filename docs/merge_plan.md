@@ -1,67 +1,58 @@
-# Merge Plan — agent-backend + mico-branch
+# Merge Plan — integration + mico-branch
 
-## Branch Summary
+## Mico's Fleet Architecture (a9e61c2)
 
-| Branch | Owner | Focus |
-|--------|-------|-------|
-| `agent-backend` (ours) | Div | LLM agent pipeline, fleet replay, watcher, tools, multi-provider LLM |
-| `mico-branch` (Mico) | Dashboard | Research API, live agent dashboard, seed/3W scoring, frontend |
+His `backend/fleet.py` at `/api/fleet` is a guided-demo replay engine:
+1. **Trigger**: `src/fleet_policy.py` runs causal pressure/model checks each tick (no LLM).
+2. **Evidence**: 4 local tools (`sensor_quality`, `causal_model`, `pressure_trends`, `incident_followup`) — all pure numerical, no RAG or playbook.
+3. **LLM path** (optional, `use_llm=True`): `src/fleet_llm.py` calls OpenRouter (nvidia/nemotron free, qwen fallback). 3 attempts, 30 s deadline, 8 max tool calls. Returns `{status, diagnosis, actions, evidence, recheck_minutes}`.
+4. **Budget**: per-session `attempt_budget` (default ~18), circuit-breaker on provider failure.
+5. **Output**: SSE events via `FleetSession.publish()` — well snapshots with `status/diagnosis/tools/assessment/activity`.
+6. **Model**: `src/fleet_model.py` trains its own LGBMClassifier on `data/raw/research/` (separate data copy). Outputs `models/fleet_model.pkl`.
+7. **Playbook**: 4 inline advisory entries in `fleet_llm.py` (sensor_review, hydrate_review, restriction_review, followup_review). Not file-based.
 
-## Endpoint Overlap
+## Touchpoints to Plug In Our Pieces
 
-| Endpoint | Ours | Theirs | Conflict? |
-|----------|------|--------|-----------|
-| `GET /health` | ✓ (capabilities, providers) | `GET /api/health` (mode, real_pilot) | No — different paths |
-| `GET /wells` | ✓ (list instances) | — | No conflict |
-| `GET /stream/{id}` | ✓ (SSE single-well) | — | No conflict |
-| `GET /results` | ✓ (eval table) | ✓ (research report) | **Conflict** — both define `/results` |
-| `POST /tts` | ✓ (stub) | — | No conflict |
-| `POST /fleet/sessions` | ✓ (fleet replay) | — | No conflict |
-| `GET /fleet/sessions/{id}/stream` | ✓ (fleet SSE) | — | No conflict |
-| `POST /api/live/sessions` | — | ✓ (their session system) | No conflict |
-| `POST /api/live/sessions/{id}/control` | — | ✓ (pause/resume/inject) | No conflict |
-| `GET /api/live/sessions/{id}/events` | — | ✓ (their SSE) | No conflict |
-| `GET /api/research` | — | ✓ (seed + real report) | No conflict |
+### (a) LLM provider pool (src/llm.py → src/fleet_llm.py)
 
-## File Conflicts
+Mico's `fleet_llm.py` uses raw `httpx` to OpenRouter. Ours uses `src/llm.py` with Gemini first (has quota), Groq, OpenRouter fallback, rate-limiting, and usage tracking.
 
-| File | Both changed? | Resolution |
-|------|--------------|------------|
-| `backend/main.py` | **Yes** — they rewrote it entirely | Use ours as base, add their `/api/live` router import |
-| `CLAUDE.md` | Yes (minor) | Manual merge, keep both additions |
-| `README.md` | Yes | Manual merge |
-| `eval.py` | They modified | No conflict (not ours) |
+**Plan**: Replace `fleet_llm._request()` with a wrapper that calls `src.llm.get_llm_client()`. Keep his tool schema and prompt. This gives us Gemini as primary (OpenRouter free is exhausted) and automatic rotation.
 
-## Session Model Comparison
+### (b) RAG playbook (src/rag.py → fleet_llm tools)
 
-| Feature | Our FleetSession | Their Session (live_agent.py) |
-|---------|-----------------|------------------------------|
-| Multi-well | ✓ (4 wells, shared clock) | ✗ (single scenario) |
-| LLM agent | ✓ (tool-calling, Gemini/Groq) | ✗ (deterministic controller) |
-| Watcher | ✓ (per-well, cooldown, recheck) | ✓ (policy-based threshold) |
-| Pause/resume | ✓ | ✓ |
-| SSE events | ✓ (fleet_tick, assessment, etc.) | ✓ (different event schema) |
-| Recording | ✓ (JSONL) | ✗ |
-| Fault injection | ✗ | ✓ (pressure_dip, frozen_feed) |
-| Priority queue | ✓ | ✗ |
+Mico has 4 inline playbook entries. Ours has 14 verified docs with BM25 in `src/rag.py`.
 
-## Recommended Plan
+**Plan**: Add `search_playbook` as a tool in his `TOOL_SCHEMAS`. When the LLM calls it, route to `src.rag.search()`. Add returned `playbook_refs` IDs to his assessment output. The inline entries stay as fallback when RAG is unavailable.
 
-1. **Base: our `backend/main.py`** — it has all working routes plus fleet endpoints.
-2. **Port their router**: Add `from backend.live import router as live_router` and `app.include_router(live_router)` to our main.py. Their `backend/live.py` and `src/live_agent.py` can coexist alongside our code.
-3. **Fix `/results` conflict**: Keep ours at `/results`, move theirs to `/api/research` (they already have that route).
-4. **Frontend**: Their frontend (`frontend/src/LiveMission.tsx`) currently calls `/api/live/*` endpoints — those will work as-is via the router include. For fleet view, they'd build a new component using `docs/api_fleet.md`.
-5. **No need to merge session models** — they serve different purposes (their deterministic demo vs our LLM fleet).
+### (c) One model for the fleet
 
-## Steps
+| | Zaine's (src/model.py) | Mico's (src/fleet_model.py) |
+|---|---|---|
+| Training data | `data/processed/` (full 3W, 1506 files) | `data/raw/research/` (subset, ~40 files) |
+| Classes | 5 fine → 3 grouped | 3 direct |
+| CV | LOWO on 9+ real wells | GroupKFold on subset |
+| Held out | WELL-00006, -00019, -00042 | Same demo wells |
+| Smoothing | EWM span=10 | None |
+| Warmup | 60 min | ~10 min |
 
-1. Merge `main` into both branches first
-2. Merge `agent-backend` into `main`
-3. Cherry-pick `mico-branch` commit, resolve `backend/main.py` conflict (keep ours, add router import)
-4. Test: `pytest -m "not pending"` + their tests
+**Recommendation**: Use **Zaine's model** (`models/lgbm_hydrate.pkl`). It trains on 10× more data, has proper LOWO validation, and holds out the demo wells. Mico's `fleet_model.py` can stay as a lightweight alternative but shouldn't be the default.
+
+**Implementation**: In `fleet_policy.py` and `fleet_llm._model()`, load the scorer from `src.model.predict` instead of `src.fleet_model.load_bundle`. Both return `p_hydrate/p_lookalike/p_normal` so the interface is compatible.
+
+## Merge Steps
+
+1. `git merge --no-ff origin/mico-branch` on integration.
+2. **backend/main.py**: Keep ours as base. Add `from backend.fleet import router as fleet_router; app.include_router(fleet_router)` (his fleet is at `/api/fleet`, ours at `/fleet` — no overlap).
+3. **backend/fleet.py**: His replaces ours (we retire our fleet.py — rename ours to `backend/fleet_legacy.py` temporarily for reference).
+4. **CLAUDE.md, README.md, eval.py**: Manual merge, keep both additions.
+5. **New files** (no conflict): `src/fleet_llm.py`, `src/fleet_model.py`, `src/fleet_policy.py`, `src/live_agent.py`, `src/real_pilot.py`, `src/research.py`, `frontend/*`, `scripts/*`, `tests/test_fleet_*.py`.
+6. Install `requirements-research.txt`.
+7. Run full test suite. Fix import issues in my files only.
+8. Wire LLM provider + RAG + Zaine's model (steps a/b/c above).
 
 ## Risks
 
-- Their `backend/main.py` is a full rewrite — git will show a conflict. Manual resolution needed but straightforward (add their router to our file).
-- Their `src/live_agent.py` imports `src.research` which has its own dependencies (`requirements-research.txt`). Need to install those.
-- Their frontend is self-contained and won't conflict with our backend changes.
+- His `backend/fleet.py` is a full rewrite (904 lines) with different SSE event schema — dashboard expects his format.
+- His fleet uses `data/raw/research/` which may not exist on this laptop (need to check / create symlinks).
+- His tests import `src.fleet_policy`, `src.real_pilot` which have their own deps.

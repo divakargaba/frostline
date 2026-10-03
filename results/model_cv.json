@@ -9,8 +9,8 @@
     "all": {
       "n_features": 143,
       "minute": {
-        "macro_f1": 0.439,
-        "auc_hydrate_vs_rest": 0.915,
+        "macro_f1": 0.445,
+        "auc_hydrate_vs_rest": 0.916,
         "confusion": {
           "classes": [
             "normal",
@@ -21,39 +21,39 @@
           ],
           "matrix": [
             [
-              133316,
-              6539,
-              8381,
-              9592,
-              4479
+              131474,
+              6627,
+              9560,
+              10272,
+              4374
             ],
             [
-              16914,
-              31216,
-              1413,
-              1069,
-              695
+              15482,
+              32572,
+              1483,
+              1066,
+              704
             ],
             [
-              1143,
+              1110,
               0,
-              552,
+              585,
               218,
               0
             ],
             [
-              58597,
+              53794,
               0,
-              13205,
-              33962,
-              2480
+              16928,
+              34856,
+              2666
             ],
             [
-              13589,
+              13508,
               108,
-              981,
-              632,
-              5466
+              1010,
+              652,
+              5498
             ]
           ]
         }
@@ -66,14 +66,14 @@
           "missed": 1,
           "events": 19,
           "caught_rate": 0.895,
-          "false_alarms_per_day": 1.762,
-          "false_alarms_per_day_normal_files": 0.575,
-          "false_alarms_per_day_event_lead_in": 6.093,
-          "mean_lead_time_min": 4180.8,
-          "median_lead_vs_form_min": -5.0,
-          "misdiagnosis_rate": 0.107,
+          "false_alarms_per_day": 2.071,
+          "false_alarms_per_day_normal_files": 0.505,
+          "false_alarms_per_day_event_lead_in": 7.782,
+          "mean_lead_time_min": 4188.3,
+          "median_lead_vs_form_min": -4.0,
+          "misdiagnosis_rate": 0.104,
           "lookalike_events": 383,
-          "ambiguous_files_pct_time_in_alarm": 27.7
+          "ambiguous_files_pct_time_in_alarm": 30.8
         },
         {
           "threshold": 0.4,
@@ -82,30 +82,30 @@
           "missed": 1,
           "events": 19,
           "caught_rate": 0.895,
-          "false_alarms_per_day": 1.388,
-          "false_alarms_per_day_normal_files": 0.435,
-          "false_alarms_per_day_event_lead_in": 4.864,
-          "mean_lead_time_min": 4011.1,
-          "median_lead_vs_form_min": -6.0,
-          "misdiagnosis_rate": 0.099,
+          "false_alarms_per_day": 1.531,
+          "false_alarms_per_day_normal_files": 0.463,
+          "false_alarms_per_day_event_lead_in": 5.427,
+          "mean_lead_time_min": 4179.9,
+          "median_lead_vs_form_min": -7.0,
+          "misdiagnosis_rate": 0.104,
           "lookalike_events": 383,
-          "ambiguous_files_pct_time_in_alarm": 19.7
+          "ambiguous_files_pct_time_in_alarm": 22.4
         },
         {
           "threshold": 0.5,
-          "caught": 16,
+          "caught": 17,
           "late": 1,
-          "missed": 2,
+          "missed": 1,
           "events": 19,
-          "caught_rate": 0.842,
-          "false_alarms_per_day": 1.167,
+          "caught_rate": 0.895,
+          "false_alarms_per_day": 1.19,
           "false_alarms_per_day_normal_files": 0.477,
-          "false_alarms_per_day_event_lead_in": 3.686,
-          "mean_lead_time_min": 3878.6,
-          "median_lead_vs_form_min": -10.0,
-          "misdiagnosis_rate": 0.097,
+          "false_alarms_per_day_event_lead_in": 3.789,
+          "mean_lead_time_min": 3966.8,
+          "median_lead_vs_form_min": -9.0,
+          "misdiagnosis_rate": 0.099,
           "lookalike_events": 383,
-          "ambiguous_files_pct_time_in_alarm": 14.8
+          "ambiguous_files_pct_time_in_alarm": 16.5
         },
         {
           "threshold": 0.6,
@@ -114,14 +114,14 @@
           "missed": 3,
           "events": 19,
           "caught_rate": 0.789,
-          "false_alarms_per_day": 0.859,
+          "false_alarms_per_day": 0.87,
           "false_alarms_per_day_normal_files": 0.407,
-          "false_alarms_per_day_event_lead_in": 2.509,
-          "mean_lead_time_min": 3871.6,
+          "false_alarms_per_day_event_lead_in": 2.56,
+          "mean_lead_time_min": 3873.8,
           "median_lead_vs_form_min": -11.0,
-          "misdiagnosis_rate": 0.094,
+          "misdiagnosis_rate": 0.097,
           "lookalike_events": 383,
-          "ambiguous_files_pct_time_in_alarm": 9.8
+          "ambiguous_files_pct_time_in_alarm": 11.6
         },
         {
           "threshold": 0.7,
@@ -130,14 +130,14 @@
           "missed": 4,
           "events": 19,
           "caught_rate": 0.737,
-          "false_alarms_per_day": 0.694,
+          "false_alarms_per_day": 0.936,
           "false_alarms_per_day_normal_files": 0.407,
-          "false_alarms_per_day_event_lead_in": 1.741,
-          "mean_lead_time_min": 3867.8,
-          "median_lead_vs_form_min": -32.5,
-          "misdiagnosis_rate": 0.084,
+          "false_alarms_per_day_event_lead_in": 2.867,
+          "mean_lead_time_min": 3866.6,
+          "median_lead_vs_form_min": -24.5,
+          "misdiagnosis_rate": 0.086,
           "lookalike_events": 383,
-          "ambiguous_files_pct_time_in_alarm": 5.5
+          "ambiguous_files_pct_time_in_alarm": 6.7
         },
         {
           "threshold": 0.8,
@@ -146,24 +146,24 @@
           "missed": 6,
           "events": 19,
           "caught_rate": 0.684,
-          "false_alarms_per_day": 0.529,
-          "false_alarms_per_day_normal_files": 0.407,
-          "false_alarms_per_day_event_lead_in": 0.973,
-          "mean_lead_time_min": 3862.3,
-          "median_lead_vs_form_min": -20.0,
-          "misdiagnosis_rate": 0.07,
+          "false_alarms_per_day": 0.639,
+          "false_alarms_per_day_normal_files": 0.421,
+          "false_alarms_per_day_event_lead_in": 1.434,
+          "mean_lead_time_min": 4323.9,
+          "median_lead_vs_form_min": -32.0,
+          "misdiagnosis_rate": 0.076,
           "lookalike_events": 383,
-          "ambiguous_files_pct_time_in_alarm": 2.2
+          "ambiguous_files_pct_time_in_alarm": 3.0
         }
       ],
       "ci95_at_headline": {
         "caught_rate": [
-          0.714,
+          0.75,
           1.0
         ],
         "false_alarms_per_day": [
-          0.162,
-          4.405
+          0.193,
+          4.468
         ],
         "false_alarms_per_day_normal_files": [
           0.0,
@@ -171,19 +171,19 @@
         ],
         "misdiagnosis_rate": [
           0.0,
-          0.364
+          0.365
         ],
         "mean_lead_time_min": [
-          1465.567,
-          6393.778
+          1580.6,
+          6430.42
         ]
       }
     },
     "relative": {
       "n_features": 91,
       "minute": {
-        "macro_f1": 0.338,
-        "auc_hydrate_vs_rest": 0.958,
+        "macro_f1": 0.34,
+        "auc_hydrate_vs_rest": 0.961,
         "confusion": {
           "classes": [
             "normal",
@@ -194,39 +194,39 @@
           ],
           "matrix": [
             [
-              111911,
-              14325,
-              10036,
-              17638,
-              8397
+              111980,
+              14147,
+              9395,
+              18761,
+              8024
             ],
             [
-              3945,
-              47072,
-              199,
-              18,
-              73
+              4253,
+              46736,
+              226,
+              14,
+              78
             ],
             [
-              969,
+              950,
               0,
-              733,
-              211,
+              762,
+              201,
               0
             ],
             [
-              70585,
+              72667,
               0,
-              3583,
-              583,
-              33493
+              2809,
+              563,
+              32205
             ],
             [
-              15344,
-              41,
-              132,
-              408,
-              4851
+              15183,
+              44,
+              205,
+              508,
+              4836
             ]
           ]
         }
@@ -239,14 +239,14 @@
           "missed": 1,
           "events": 19,
           "caught_rate": 0.947,
-          "false_alarms_per_day": 1.707,
-          "false_alarms_per_day_normal_files": 0.491,
-          "false_alarms_per_day_event_lead_in": 6.144,
-          "mean_lead_time_min": 4118.9,
-          "median_lead_vs_form_min": 113.5,
-          "misdiagnosis_rate": 0.097,
+          "false_alarms_per_day": 1.531,
+          "false_alarms_per_day_normal_files": 0.505,
+          "false_alarms_per_day_event_lead_in": 5.273,
+          "mean_lead_time_min": 4119.0,
+          "median_lead_vs_form_min": 113.0,
+          "misdiagnosis_rate": 0.099,
           "lookalike_events": 383,
-          "ambiguous_files_pct_time_in_alarm": 38.8
+          "ambiguous_files_pct_time_in_alarm": 37.6
         },
         {
           "threshold": 0.4,
@@ -255,14 +255,14 @@
           "missed": 1,
           "events": 19,
           "caught_rate": 0.895,
-          "false_alarms_per_day": 1.443,
-          "false_alarms_per_day_normal_files": 0.463,
-          "false_alarms_per_day_event_lead_in": 5.017,
-          "mean_lead_time_min": 4571.1,
-          "median_lead_vs_form_min": 38.0,
-          "misdiagnosis_rate": 0.081,
+          "false_alarms_per_day": 1.542,
+          "false_alarms_per_day_normal_files": 0.519,
+          "false_alarms_per_day_event_lead_in": 5.273,
+          "mean_lead_time_min": 4568.6,
+          "median_lead_vs_form_min": 59.0,
+          "misdiagnosis_rate": 0.084,
           "lookalike_events": 383,
-          "ambiguous_files_pct_time_in_alarm": 31.9
+          "ambiguous_files_pct_time_in_alarm": 30.0
         },
         {
           "threshold": 0.5,
@@ -271,30 +271,30 @@
           "missed": 1,
           "events": 19,
           "caught_rate": 0.895,
-          "false_alarms_per_day": 1.443,
-          "false_alarms_per_day_normal_files": 0.505,
-          "false_alarms_per_day_event_lead_in": 4.864,
-          "mean_lead_time_min": 4498.9,
-          "median_lead_vs_form_min": 28.0,
-          "misdiagnosis_rate": 0.063,
+          "false_alarms_per_day": 1.63,
+          "false_alarms_per_day_normal_files": 0.73,
+          "false_alarms_per_day_event_lead_in": 4.915,
+          "mean_lead_time_min": 4521.6,
+          "median_lead_vs_form_min": 35.0,
+          "misdiagnosis_rate": 0.065,
           "lookalike_events": 383,
-          "ambiguous_files_pct_time_in_alarm": 25.4
+          "ambiguous_files_pct_time_in_alarm": 23.7
         },
         {
           "threshold": 0.6,
-          "caught": 16,
+          "caught": 17,
           "late": 1,
-          "missed": 2,
+          "missed": 1,
           "events": 19,
-          "caught_rate": 0.842,
-          "false_alarms_per_day": 1.597,
-          "false_alarms_per_day_normal_files": 0.688,
-          "false_alarms_per_day_event_lead_in": 4.915,
-          "mean_lead_time_min": 4472.9,
-          "median_lead_vs_form_min": 1.0,
+          "caught_rate": 0.895,
+          "false_alarms_per_day": 1.674,
+          "false_alarms_per_day_normal_files": 0.758,
+          "false_alarms_per_day_event_lead_in": 5.017,
+          "mean_lead_time_min": 4467.1,
+          "median_lead_vs_form_min": -1.0,
           "misdiagnosis_rate": 0.05,
           "lookalike_events": 383,
-          "ambiguous_files_pct_time_in_alarm": 19.5
+          "ambiguous_files_pct_time_in_alarm": 18.3
         },
         {
           "threshold": 0.7,
@@ -303,30 +303,30 @@
           "missed": 2,
           "events": 19,
           "caught_rate": 0.842,
-          "false_alarms_per_day": 1.828,
-          "false_alarms_per_day_normal_files": 0.94,
-          "false_alarms_per_day_event_lead_in": 5.069,
-          "mean_lead_time_min": 4437.4,
-          "median_lead_vs_form_min": -5.5,
-          "misdiagnosis_rate": 0.039,
+          "false_alarms_per_day": 1.927,
+          "false_alarms_per_day_normal_files": 1.081,
+          "false_alarms_per_day_event_lead_in": 5.017,
+          "mean_lead_time_min": 4450.6,
+          "median_lead_vs_form_min": -9.5,
+          "misdiagnosis_rate": 0.034,
           "lookalike_events": 383,
-          "ambiguous_files_pct_time_in_alarm": 14.0
+          "ambiguous_files_pct_time_in_alarm": 13.0
         },
         {
           "threshold": 0.8,
           "caught": 16,
-          "late": 0,
-          "missed": 3,
+          "late": 1,
+          "missed": 2,
           "events": 19,
           "caught_rate": 0.842,
-          "false_alarms_per_day": 1.927,
-          "false_alarms_per_day_normal_files": 1.109,
-          "false_alarms_per_day_event_lead_in": 4.915,
-          "mean_lead_time_min": 4224.9,
-          "median_lead_vs_form_min": -16.0,
-          "misdiagnosis_rate": 0.031,
+          "false_alarms_per_day": 2.236,
+          "false_alarms_per_day_normal_files": 1.024,
+          "false_alarms_per_day_event_lead_in": 6.656,
+          "mean_lead_time_min": 4220.1,
+          "median_lead_vs_form_min": -13.0,
+          "misdiagnosis_rate": 0.023,
           "lookalike_events": 383,
-          "ambiguous_files_pct_time_in_alarm": 8.3
+          "ambiguous_files_pct_time_in_alarm": 7.7
         }
       ],
       "ci95_at_headline": {
@@ -335,46 +335,46 @@
           1.0
         ],
         "false_alarms_per_day": [
-          0.374,
-          4.334
+          0.393,
+          4.906
         ],
         "false_alarms_per_day_normal_files": [
           0.0,
-          2.756
+          4.055
         ],
         "misdiagnosis_rate": [
           0.0,
-          0.239
+          0.25
         ],
         "mean_lead_time_min": [
-          1958.17,
-          7112.102
+          1989.477,
+          7112.76
         ]
       }
     }
   },
-  "chosen_feature_set": "relative",
+  "chosen_feature_set": "all",
   "top_features": {
-    "QGL_slope_60": 248784.4,
-    "QGL_std_10": 189694.7,
-    "P-JUS-CKP_std_10": 180603.6,
-    "QGL_delta_60": 163761.7,
-    "P-MON-CKP_std_30": 155242.0,
-    "P-MON-CKP_std_60": 154103.1,
-    "P-JUS-CKP_std_30": 118611.4,
-    "P_PDG_minus_P_TPT_std_10": 111729.0,
-    "P-PDG_std_60": 101251.1,
-    "T-TPT_std_60": 96956.1,
-    "P-MON-CKP_std_10": 83304.9,
-    "P_PDG_minus_P_TPT_std_30": 82110.4,
-    "T-JUS-CKP_std_10": 72506.2,
-    "QGL_std_30": 70871.9,
-    "P-TPT_std_60": 70276.2
+    "P-PDG_mean_10": 304954.3,
+    "QGL_slope_60": 264681.2,
+    "T-MON-CKP_mean_10": 220894.2,
+    "P-TPT_mean_60": 123863.3,
+    "P-MON-CKP_std_30": 123035.0,
+    "P-MON-CKP_std_10": 117217.4,
+    "T-MON-CKP_mean_30": 117102.0,
+    "QGL_delta_60": 115964.9,
+    "T-TPT_mean_30": 100812.1,
+    "T-MON-CKP_mean_60": 79309.1,
+    "P-PDG_std_60": 75709.2,
+    "P-PDG_mean_30": 68512.9,
+    "T-TPT_mean_60": 62846.8,
+    "P-MON-CKP_std_60": 61863.9,
+    "P-MON-CKP": 58651.1
   },
   "final_test": {
     "minute": {
-      "macro_f1": 0.416,
-      "auc_hydrate_vs_rest": 0.952,
+      "macro_f1": 0.459,
+      "auc_hydrate_vs_rest": 0.949,
       "confusion": {
         "classes": [
           "normal",
@@ -385,32 +385,32 @@
         ],
         "matrix": [
           [
-            19335,
-            5820,
-            113,
-            8471,
-            157
+            25100,
+            6882,
+            237,
+            0,
+            1677
           ],
           [
-            6,
-            11540,
+            337,
+            11562,
+            2,
             0,
-            427,
-            0
+            72
           ],
           [
-            742,
+            39,
             0,
-            473,
+            1072,
             0,
-            383
+            487
           ],
           [
-            2462,
+            3603,
             0,
             0,
-            1207,
-            58
+            0,
+            124
           ],
           [
             0,
@@ -430,27 +430,27 @@
         "missed": 0,
         "events": 9,
         "caught_rate": 1.0,
-        "false_alarms_per_day": 3.356,
-        "false_alarms_per_day_normal_files": 2.162,
-        "false_alarms_per_day_event_lead_in": 10.978,
-        "mean_lead_time_min": 2664.4,
-        "median_lead_vs_form_min": 4.0,
+        "false_alarms_per_day": 2.464,
+        "false_alarms_per_day_normal_files": 0.884,
+        "false_alarms_per_day_event_lead_in": 12.546,
+        "mean_lead_time_min": 2530.4,
+        "median_lead_vs_form_min": 11.0,
         "misdiagnosis_rate": 0.0,
         "lookalike_events": 2,
         "ambiguous_files_pct_time_in_alarm": 0.0
       },
       {
         "threshold": 0.4,
-        "caught": 9,
+        "caught": 8,
         "late": 0,
-        "missed": 0,
+        "missed": 1,
         "events": 9,
-        "caught_rate": 1.0,
-        "false_alarms_per_day": 2.422,
-        "false_alarms_per_day_normal_files": 1.671,
-        "false_alarms_per_day_event_lead_in": 7.214,
-        "mean_lead_time_min": 2659.0,
-        "median_lead_vs_form_min": -4.0,
+        "caught_rate": 0.889,
+        "false_alarms_per_day": 1.614,
+        "false_alarms_per_day_normal_files": 0.983,
+        "false_alarms_per_day_event_lead_in": 5.646,
+        "mean_lead_time_min": 2375.8,
+        "median_lead_vs_form_min": 0.0,
         "misdiagnosis_rate": 0.0,
         "lookalike_events": 2,
         "ambiguous_files_pct_time_in_alarm": 0.0
@@ -462,11 +462,11 @@
         "missed": 1,
         "events": 9,
         "caught_rate": 0.889,
-        "false_alarms_per_day": 2.294,
-        "false_alarms_per_day_normal_files": 1.671,
-        "false_alarms_per_day_event_lead_in": 6.273,
-        "mean_lead_time_min": 2657.6,
-        "median_lead_vs_form_min": -5.0,
+        "false_alarms_per_day": 2.337,
+        "false_alarms_per_day_normal_files": 1.278,
+        "false_alarms_per_day_event_lead_in": 9.096,
+        "mean_lead_time_min": 2367.6,
+        "median_lead_vs_form_min": -7.0,
         "misdiagnosis_rate": 0.0,
         "lookalike_events": 2,
         "ambiguous_files_pct_time_in_alarm": 0.0
@@ -478,43 +478,43 @@
         "missed": 1,
         "events": 9,
         "caught_rate": 0.889,
-        "false_alarms_per_day": 2.082,
-        "false_alarms_per_day_normal_files": 1.425,
-        "false_alarms_per_day_event_lead_in": 6.273,
-        "mean_lead_time_min": 2542.0,
-        "median_lead_vs_form_min": -7.0,
+        "false_alarms_per_day": 1.444,
+        "false_alarms_per_day_normal_files": 1.327,
+        "false_alarms_per_day_event_lead_in": 2.196,
+        "mean_lead_time_min": 2364.8,
+        "median_lead_vs_form_min": -8.5,
         "misdiagnosis_rate": 0.0,
         "lookalike_events": 2,
         "ambiguous_files_pct_time_in_alarm": 0.0
       },
       {
         "threshold": 0.7,
-        "caught": 8,
+        "caught": 7,
         "late": 0,
-        "missed": 1,
+        "missed": 2,
         "events": 9,
-        "caught_rate": 0.889,
-        "false_alarms_per_day": 2.506,
-        "false_alarms_per_day_normal_files": 1.376,
-        "false_alarms_per_day_event_lead_in": 9.723,
-        "mean_lead_time_min": 2530.2,
-        "median_lead_vs_form_min": -9.0,
+        "caught_rate": 0.778,
+        "false_alarms_per_day": 1.869,
+        "false_alarms_per_day_normal_files": 1.769,
+        "false_alarms_per_day_event_lead_in": 2.509,
+        "mean_lead_time_min": 2363.0,
+        "median_lead_vs_form_min": -4.0,
         "misdiagnosis_rate": 0.0,
         "lookalike_events": 2,
         "ambiguous_files_pct_time_in_alarm": 0.0
       },
       {
         "threshold": 0.8,
-        "caught": 6,
+        "caught": 7,
         "late": 0,
-        "missed": 3,
+        "missed": 2,
         "events": 9,
-        "caught_rate": 0.667,
-        "false_alarms_per_day": 2.889,
-        "false_alarms_per_day_normal_files": 1.916,
-        "false_alarms_per_day_event_lead_in": 9.096,
-        "mean_lead_time_min": 2435.2,
-        "median_lead_vs_form_min": -11.5,
+        "caught_rate": 0.778,
+        "false_alarms_per_day": 2.252,
+        "false_alarms_per_day_normal_files": 2.359,
+        "false_alarms_per_day_event_lead_in": 1.568,
+        "mean_lead_time_min": 2358.2,
+        "median_lead_vs_form_min": -9.0,
         "misdiagnosis_rate": 0.0,
         "lookalike_events": 2,
         "ambiguous_files_pct_time_in_alarm": 0.0
@@ -557,9 +557,9 @@
         "lead_est": 1935.0,
         "lead_form": -1.0,
         "flagged": false,
-        "alarm_min": 2867,
+        "alarm_min": 1891,
         "minutes": 3933,
-        "fa": 9,
+        "fa": 0,
         "normal_min": 1654,
         "kind": "hydrate"
       },
@@ -568,12 +568,12 @@
         "well_id": "WELL-00019",
         "event_class": 8,
         "outcome": "caught",
-        "lead_est": 4985.0,
-        "lead_form": 621.0,
+        "lead_est": 4346.0,
+        "lead_form": -18.0,
         "flagged": false,
-        "alarm_min": 5122,
+        "alarm_min": 4483,
         "minutes": 5124,
-        "fa": 1,
+        "fa": 0,
         "normal_min": 623,
         "kind": "hydrate"
       },
@@ -582,12 +582,12 @@
         "well_id": "WELL-00019",
         "event_class": 8,
         "outcome": "caught",
-        "lead_est": 2639.0,
-        "lead_form": 814.0,
+        "lead_est": 1813.0,
+        "lead_form": -12.0,
         "flagged": false,
-        "alarm_min": 2672,
+        "alarm_min": 1846,
         "minutes": 2674,
-        "fa": 1,
+        "fa": 0,
         "normal_min": 816,
         "kind": "hydrate"
       },
@@ -596,12 +596,12 @@
         "well_id": "WELL-00019",
         "event_class": 8,
         "outcome": "caught",
-        "lead_est": 3189.0,
-        "lead_form": -9.0,
+        "lead_est": 3196.0,
+        "lead_form": -2.0,
         "flagged": false,
-        "alarm_min": 2856,
+        "alarm_min": 3648,
         "minutes": 4128,
-        "fa": 1,
+        "fa": 22,
         "normal_min": 793,
         "kind": "hydrate"
       },
@@ -611,11 +611,11 @@
         "event_class": 9,
         "outcome": "caught",
         "lead_est": null,
-        "lead_form": -79.0,
+        "lead_form": 40.0,
         "flagged": false,
-        "alarm_min": 109,
+        "alarm_min": 378,
         "minutes": 507,
-        "fa": 4,
+        "fa": 3,
         "normal_min": 242,
         "kind": "hydrate"
       },
@@ -623,11 +623,11 @@
         "instance_id": "WELL-00042_20141218004109",
         "well_id": "WELL-00042",
         "event_class": 9,
-        "outcome": "missed",
+        "outcome": "caught",
         "lead_est": null,
-        "lead_form": null,
+        "lead_form": -50.0,
         "flagged": false,
-        "alarm_min": 0,
+        "alarm_min": 6,
         "minutes": 72,
         "fa": 0,
         "normal_min": 16,
@@ -638,12 +638,12 @@
         "well_id": "WELL-00042",
         "event_class": 9,
         "outcome": "caught",
-        "lead_est": 540.0,
-        "lead_form": 18.0,
+        "lead_est": 548.0,
+        "lead_form": 26.0,
         "flagged": false,
-        "alarm_min": 289,
+        "alarm_min": 584,
         "minutes": 825,
-        "fa": 1,
+        "fa": 2,
         "normal_min": 47,
         "kind": "hydrate"
       },
@@ -651,13 +651,13 @@
         "instance_id": "WELL-00042_20141221190219",
         "well_id": "WELL-00042",
         "event_class": 9,
-        "outcome": "caught",
+        "outcome": "missed",
         "lead_est": null,
-        "lead_form": -180.0,
+        "lead_form": null,
         "flagged": false,
-        "alarm_min": 37,
+        "alarm_min": 0,
         "minutes": 396,
-        "fa": 2,
+        "fa": 0,
         "normal_min": 181,
         "kind": "hydrate"
       },
@@ -667,11 +667,11 @@
         "event_class": 9,
         "outcome": "caught",
         "lead_est": null,
-        "lead_form": -154.0,
+        "lead_form": -42.0,
         "flagged": false,
-        "alarm_min": 35,
+        "alarm_min": 188,
         "minutes": 325,
-        "fa": 1,
+        "fa": 2,
         "normal_min": 41,
         "kind": "hydrate"
       }
