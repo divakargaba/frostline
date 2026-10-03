@@ -28,8 +28,9 @@ TRIGGER_LOG_PATH = Path("data/state/trigger_log.jsonl")
 DEFAULT_THRESHOLDS = {
     "watch_threshold": 0.5,
     "margin_warn_band_C": 3.0,
-    "pressure_drop_bar_30min": 8.0,       # P-TPT bidirectional threshold
-    "pressure_mon_change_bar_60min": 3.0,  # P-MON-CKP bidirectional threshold (upstream gauge)
+    "pressure_sigma_k": 8.0,              # Trigger when 30/60-min change > k * rolling_std
+    "pressure_sigma_sustain_min": 3,       # Must exceed k-sigma for N consecutive minutes
+    "pressure_abs_floor_bar": 0.5,         # Minimum absolute change (prevents noise on flat sensors)
     "lookalike_threshold": 0.5,            # p_lookalike trigger threshold (when model exists)
     "cooldown_min": 60,
     "recheck_default_min": 15,

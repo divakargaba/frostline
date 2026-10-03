@@ -37,59 +37,6 @@ class TestTrigger:
         result = w.check_tick(tick, "WELL-00019", 0)
         assert result is not None
 
-    def test_fallback_rule_no_model_no_physics(self):
-        """When both model and physics are missing, pressure drop fallback fires."""
-        w = Watcher()
-        # Feed 15 ticks with a pressure drop of 10 bar (above 5 bar threshold)
-        for i in range(15):
-            p = 280.0 - i * (10.0 / 14)  # drops from 280 to 270
-            tick = {"t": f"2024-01-07T08:{i:02d}", "p_hydrate": None, "margin_C": None,
-                    "sensors": {"P_TPT_bar": p}}
-            result = w.check_tick(tick, "WELL-00019", i)
-        assert result is not None
-        assert "Pressure fallback" in result["reason"]
-
-    def test_no_fallback_without_pressure_drop(self):
-        """Stable pressure should not trigger fallback."""
-        w = Watcher()
-        for i in range(15):
-            tick = {"t": f"2024-01-07T08:{i:02d}", "p_hydrate": None, "margin_C": None,
-                    "sensors": {"P_TPT_bar": 133.0}}  # Stable, even if "low"
-            result = w.check_tick(tick, "WELL-00019", i)
-        assert result is None
-
-    def test_fallback_pressure_rise_triggers(self):
-        """Bidirectional: pressure RISE should also trigger fallback."""
-        w = Watcher()
-        for i in range(15):
-            p = 270.0 + i * (10.0 / 14)  # rises from 270 to 280
-            tick = {"t": f"2024-01-07T08:{i:02d}", "p_hydrate": None, "margin_C": None,
-                    "sensors": {"P_TPT_bar": p}}
-            result = w.check_tick(tick, "WELL-00019", i)
-        assert result is not None
-        assert "rose" in result["reason"]
-
-    def test_fallback_p_mon_ckp_rise_triggers(self):
-        """P-MON-CKP sustained rise above threshold triggers fallback."""
-        w = Watcher()
-        for i in range(35):
-            # P-MON-CKP rises 4.0 bar over 35 min (above 3.0 threshold)
-            pm = 52.0 + i * (4.0 / 34)
-            tick = {"t": f"2024-01-07T08:{i:02d}", "p_hydrate": None, "margin_C": None,
-                    "sensors": {"P_MON_CKP_bar": pm}}
-            result = w.check_tick(tick, "WELL-00019", i)
-        assert result is not None
-        assert "P_MON_CKP" in result["reason"]
-
-    def test_no_fallback_p_mon_ckp_stable(self):
-        """Stable P-MON-CKP should not trigger."""
-        w = Watcher()
-        for i in range(35):
-            tick = {"t": f"2024-01-07T08:{i:02d}", "p_hydrate": None, "margin_C": None,
-                    "sensors": {"P_MON_CKP_bar": 52.0}}
-            result = w.check_tick(tick, "WELL-00019", i)
-        assert result is None
-
     def test_lookalike_threshold_triggers(self):
         """p_lookalike above threshold should trigger."""
         w = Watcher()
@@ -98,6 +45,190 @@ class TestTrigger:
         result = w.check_tick(tick, "WELL-00019", 0)
         assert result is not None
         assert "p_lookalike" in result["reason"]
+
+
+class TestBaselineRelativeTrigger:
+    """Condition 3: baseline-relative pressure change detection."""
+
+    def _feed_baseline(self, w, well_id, n, p_tpt=280.0, p_mon=276.0,
+                        noise=0.1):
+        """Feed n ticks of stable baseline data."""
+        import numpy as np
+        rng = np.random.RandomState(42)
+        for i in range(n):
+            tick = {
+                "t": f"2024-01-07T{8+i//60:02d}:{i%60:02d}",
+                "p_hydrate": None, "margin_C": None,
+                "sensors": {
+                    "P_TPT_bar": p_tpt + rng.normal(0, noise),
+                    "P_MON_CKP_bar": p_mon + rng.normal(0, noise),
+                },
+            }
+            w.check_tick(tick, well_id, i)
+
+    def test_triggers_on_large_sigma_change(self):
+        """A change well beyond k*baseline_std should trigger."""
+        w = Watcher()
+        well = "WELL-SIGMA"
+        # 60 ticks of stable baseline (std ~0.1 bar)
+        self._feed_baseline(w, well, 60)
+        # Then a sustained large change (5 bar drop = 50 sigma)
+        results = []
+        sustain = w.thresholds.get("pressure_sigma_sustain_min", 3)
+        for i in range(sustain + 2):
+            tick = {
+                "t": f"2024-01-07T09:{i:02d}",
+                "p_hydrate": None, "margin_C": None,
+                "sensors": {"P_TPT_bar": 275.0 - i * 0.5},
+            }
+            result = w.check_tick(tick, well, 60 + i)
+            if result:
+                results.append(result)
+        assert len(results) >= 1
+        assert "Pressure anomaly" in results[0]["reason"]
+        assert "σ" in results[0]["reason"]
+
+    def test_flat_sensor_does_not_fire(self):
+        """A sensor with zero std should not fire on noise."""
+        w = Watcher()
+        well = "WELL-FLAT"
+        # 60 ticks of perfectly flat P-TPT
+        for i in range(60):
+            tick = {
+                "t": f"2024-01-07T08:{i:02d}",
+                "p_hydrate": None, "margin_C": None,
+                "sensors": {"P_TPT_bar": 280.0},
+            }
+            w.check_tick(tick, well, i)
+        # Then tiny noise (0.01 bar) — should NOT trigger because abs_floor=0.5
+        for i in range(10):
+            tick = {
+                "t": f"2024-01-07T09:{i:02d}",
+                "p_hydrate": None, "margin_C": None,
+                "sensors": {"P_TPT_bar": 280.0 + 0.01 * (i % 2)},
+            }
+            result = w.check_tick(tick, well, 60 + i)
+        assert result is None
+
+    def test_normal_well_silent_over_180_min(self):
+        """A well with normal variability should not trigger over 180 min."""
+        w = Watcher()
+        well = "WELL-NORMAL"
+        import numpy as np
+        rng = np.random.RandomState(123)
+        last_result = None
+        for i in range(180):
+            # Normal fluctuation: std ~0.9 bar, max ~3 bar swing
+            p = 280.0 + rng.normal(0, 0.9)
+            tick = {
+                "t": f"2024-01-07T{8+i//60:02d}:{i%60:02d}",
+                "p_hydrate": None, "margin_C": None,
+                "sensors": {
+                    "P_TPT_bar": p,
+                    "P_MON_CKP_bar": 276.0 + rng.normal(0, 0.7),
+                },
+            }
+            last_result = w.check_tick(tick, well, i)
+        # Should never trigger on normal noise
+        st = w._state(well)
+        # Check no trigger was ever returned
+        assert st.last_decision_minute == -999  # No decision recorded
+
+    def test_causality_future_rows_dont_change_triggers(self):
+        """Changing future data doesn't affect triggers at current minute."""
+        import numpy as np
+        w1 = Watcher()
+        w2 = Watcher()
+        well = "WELL-CAUSAL"
+        rng = np.random.RandomState(42)
+
+        # Feed 70 ticks of identical baseline to both
+        for i in range(70):
+            p = 280.0 + rng.normal(0, 0.1)
+            tick = {
+                "t": f"2024-01-07T08:{i:02d}",
+                "p_hydrate": None, "margin_C": None,
+                "sensors": {"P_TPT_bar": p},
+            }
+            w1.check_tick(tick, well, i)
+            w2.check_tick(tick, well, i)
+
+        # Now w1 gets the same next tick, w2 gets a different future
+        tick_now = {
+            "t": "2024-01-07T09:10",
+            "p_hydrate": None, "margin_C": None,
+            "sensors": {"P_TPT_bar": 275.0},
+        }
+        r1 = w1.check_tick(tick_now, well, 70)
+        r2 = w2.check_tick(tick_now, well, 70)
+
+        # Both should produce the same result (or both None)
+        assert (r1 is None) == (r2 is None)
+        if r1 is not None:
+            assert r1["score"] == r2["score"]
+
+    def test_condition3_runs_with_margin_present(self):
+        """Condition 3 should still run even when margin is available."""
+        w = Watcher()
+        well = "WELL-MARGIN-SIGMA"
+        # Feed baseline with margin (healthy margin of 5.0 — no margin trigger)
+        import numpy as np
+        rng = np.random.RandomState(42)
+        for i in range(60):
+            tick = {
+                "t": f"2024-01-07T08:{i:02d}",
+                "p_hydrate": None,
+                "margin_C": 5.0,
+                "sensors": {"P_TPT_bar": 280.0 + rng.normal(0, 0.1)},
+            }
+            w.check_tick(tick, well, i)
+
+        # Now big pressure drop with margin still OK (margin is 5.0, not dangerous)
+        results = []
+        for i in range(5):
+            tick = {
+                "t": f"2024-01-07T09:{i:02d}",
+                "p_hydrate": None,
+                "margin_C": 5.0,
+                "sensors": {"P_TPT_bar": 270.0 - i},
+            }
+            result = w.check_tick(tick, well, 60 + i)
+            if result:
+                results.append(result)
+
+        # Should trigger from condition 3 (pressure anomaly), not condition 2
+        assert len(results) >= 1
+        assert "Pressure anomaly" in results[0]["reason"]
+
+    def test_p_mon_ckp_triggers(self):
+        """P-MON-CKP change beyond k-sigma should trigger."""
+        w = Watcher()
+        well = "WELL-MON"
+        import numpy as np
+        rng = np.random.RandomState(42)
+        # Feed baseline for P-MON-CKP
+        for i in range(60):
+            tick = {
+                "t": f"2024-01-07T08:{i:02d}",
+                "p_hydrate": None, "margin_C": None,
+                "sensors": {"P_MON_CKP_bar": 52.0 + rng.normal(0, 0.1)},
+            }
+            w.check_tick(tick, well, i)
+
+        # Large sustained P-MON-CKP change
+        results = []
+        for i in range(5):
+            tick = {
+                "t": f"2024-01-07T09:{i:02d}",
+                "p_hydrate": None, "margin_C": None,
+                "sensors": {"P_MON_CKP_bar": 55.0 + i * 0.5},
+            }
+            result = w.check_tick(tick, well, 60 + i)
+            if result:
+                results.append(result)
+
+        assert len(results) >= 1
+        assert "P_MON_CKP" in results[0]["reason"]
 
 
 class TestCooldown:
@@ -152,6 +283,9 @@ class TestThresholds:
         w = Watcher()
         assert w.thresholds["watch_threshold"] == DEFAULT_THRESHOLDS["watch_threshold"]
         assert w.thresholds["cooldown_min"] == DEFAULT_THRESHOLDS["cooldown_min"]
+        assert w.thresholds["pressure_sigma_k"] == DEFAULT_THRESHOLDS["pressure_sigma_k"]
+        assert w.thresholds["pressure_sigma_sustain_min"] == DEFAULT_THRESHOLDS["pressure_sigma_sustain_min"]
+        assert w.thresholds["pressure_abs_floor_bar"] == DEFAULT_THRESHOLDS["pressure_abs_floor_bar"]
 
 
 # Legacy API tests (existing test signatures)

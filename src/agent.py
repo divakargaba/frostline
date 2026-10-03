@@ -151,32 +151,64 @@ def _build_rule_fallback(ctx: AgentContext, tool_results: dict[str, dict]) -> di
             if r.get("id"):
                 playbook_refs.append(r["id"])
 
-    # Check for scaling pattern: pressure rise in get_window with stable temperature
+    # Check for slope-based patterns in get_window
     window = tool_results.get("get_window", {})
-    is_pressure_rise = False
+    is_scaling = False
+    is_restriction = False
+    is_hydrate_slope = False
     if window.get("available"):
         slopes = window.get("slopes", {})
-        # P-MON-CKP rising while T-TPT stable = scaling signature
-        p_mon_slope = slopes.get("P-MON-CKP_slope_60min") or slopes.get("P-MON-CKP_slope_30min")
         t_tpt_slope = slopes.get("T-TPT_slope_60min") or slopes.get("T-TPT_slope_30min")
+        p_tpt_slope = slopes.get("P-TPT_slope_60min") or slopes.get("P-TPT_slope_30min")
+        p_mon_slope = slopes.get("P-MON-CKP_slope_60min") or slopes.get("P-MON-CKP_slope_30min")
+
+        # Hydrate signature: P-TPT dropping AND T-TPT dropping together
+        if (p_tpt_slope is not None and p_tpt_slope < -0.01 and
+                t_tpt_slope is not None and t_tpt_slope < -0.01):
+            is_hydrate_slope = True
+
+        # Scaling: P-MON-CKP rising while T-TPT stable (gradual buildup)
         if p_mon_slope is not None and p_mon_slope > 0.005:
             if t_tpt_slope is None or abs(t_tpt_slope) < 0.01:
-                is_pressure_rise = True
+                is_scaling = True
+
+        # Restriction: sudden P-TPT change with stable temperature (quick onset)
+        p_tpt_slope_30 = slopes.get("P-TPT_slope_30min")
+        if p_tpt_slope_30 is not None and abs(p_tpt_slope_30) > 0.02:
+            if t_tpt_slope is None or abs(t_tpt_slope) < 0.01:
+                is_restriction = True
 
     # Decision logic
     if p_h >= 0.6 or (margin_c is not None and margin_c < 0):
         decision = "ALERT"
         confidence = max(p_h, 0.7)
         diagnosis = "hydrate_production_line"
+    elif is_hydrate_slope and p_h < 0.3:
+        # Slope-based hydrate detection when model is absent/weak
+        decision = "WATCH"
+        confidence = 0.55
+        diagnosis = "hydrate_production_line"
+        evidence.append({"tool": "get_window", "summary": "P-TPT and T-TPT both declining — hydrate signature"})
+        brief_parts.append("Both pressure and temperature declining together — consistent with hydrate formation. Model unavailable; monitoring via sensor trends.")
+        if "early_warning_signs" not in playbook_refs:
+            playbook_refs.append("early_warning_signs")
     elif p_h >= 0.3 or (margin_c is not None and margin_c < 3):
         decision = "WATCH"
         confidence = 0.5
         diagnosis = "hydrate_production_line"
-    elif is_pressure_rise or p_l >= 0.4:
+    elif is_restriction or (p_l >= 0.4 and not is_scaling):
+        decision = "DISMISS"
+        confidence = 0.65
+        diagnosis = "restriction"
+        evidence.append({"tool": "get_window", "summary": "Sudden P-TPT change, T-TPT stable — choke restriction pattern"})
+        brief_parts.append("Rapid pressure change with stable temperature — consistent with choke restriction, not hydrate.")
+        if "choke_flow_instability" not in playbook_refs:
+            playbook_refs.append("choke_flow_instability")
+    elif is_scaling or p_l >= 0.4:
         decision = "DISMISS"
         confidence = 0.65
         diagnosis = "scaling"
-        if is_pressure_rise:
+        if is_scaling:
             evidence.append({"tool": "get_window", "summary": "P-MON-CKP rising, T-TPT stable — scaling pattern"})
         brief_parts.append("Upstream pressure rising with stable temperature — consistent with scaling, not hydrate.")
         if "scaling_vs_hydrate" not in playbook_refs:

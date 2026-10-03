@@ -20,6 +20,10 @@ from src.tools import DEFAULT_THRESHOLDS, TRIGGER_LOG_PATH, load_thresholds, sav
 
 log = logging.getLogger("frostline.watcher")
 
+# Keep 120 minutes so we can compute a 60-min baseline std offset
+# before the 60-min change window.
+_HISTORY_LEN = 121
+
 
 @dataclass
 class WatcherState:
@@ -32,12 +36,55 @@ class WatcherState:
     recheck_at_minute: int | None = None
     # Consecutive high-score minutes
     consecutive_high: int = 0
-    # Pressure history for fallback (60-min window, bidirectional)
-    pressure_history: deque = field(default_factory=lambda: deque(maxlen=60))
-    # P-MON-CKP history (60-min window, for upstream pressure changes)
-    pressure_mon_history: deque = field(default_factory=lambda: deque(maxlen=60))
+    # Pressure histories (causal, up to _HISTORY_LEN minutes)
+    pressure_history: deque = field(default_factory=lambda: deque(maxlen=_HISTORY_LEN))
+    pressure_mon_history: deque = field(default_factory=lambda: deque(maxlen=_HISTORY_LEN))
+    pressure_jus_history: deque = field(default_factory=lambda: deque(maxlen=_HISTORY_LEN))
+    # Consecutive minutes above k-sigma for pressure condition
+    consecutive_sigma: int = 0
 
     thresholds: dict = field(default_factory=load_thresholds)
+
+
+def _baseline_std(history: deque, change_window: int) -> float | None:
+    """Causal baseline std from the period *before* the change window.
+
+    For a 30-min change window, use values from [-(30+30), -30] (the 30 min
+    before the change window). For 60-min, use [-(60+60), -60].
+    Requires at least 2*change_window values in history so the baseline
+    is a full window (not a short noisy segment).
+    """
+    vals = list(history)
+    n = len(vals)
+    if n < 2 * change_window:
+        return None
+    # Offset baseline: the change_window-sized block ending where the
+    # change window begins
+    baseline = vals[n - 2 * change_window:n - change_window]
+
+    arr = np.array([v for v in baseline if v is not None and np.isfinite(v)])
+    if len(arr) < 10:
+        return None
+    return float(np.std(arr))
+
+
+def _change_over_window(history: deque, window: int) -> tuple[float, str] | None:
+    """Absolute change from oldest to newest in the last `window` entries.
+
+    Returns (abs_change, direction) or None. Only uses causal data.
+    """
+    if len(history) < 10:
+        return None
+    n = min(window, len(history))
+    start = history[-n]
+    end = history[-1]
+    if start is None or end is None:
+        return None
+    if not np.isfinite(start) or not np.isfinite(end):
+        return None
+    change = abs(end - start)
+    direction = "rose" if end > start else "dropped"
+    return change, direction
 
 
 class Watcher:
@@ -64,8 +111,13 @@ class Watcher:
 
         Trigger conditions (any one is sufficient):
         1. p_hydrate >= watch_threshold for 3+ consecutive minutes
-        2. margin_C within warn band AND declining (slope negative)
-        3. Fallback rule: pressure dropped > threshold over 30 min window
+        2. margin_C within warn band or below 0
+        3. Baseline-relative pressure change: any monitored signal's
+           30-min or 60-min change exceeds k * baseline_std for N
+           consecutive minutes. Baseline std is computed from the
+           period before the change window (not contaminated by event).
+           Always runs — supplements model/margin.
+        4. p_lookalike above threshold
 
         Suppressed during cooldown unless score jumps significantly.
         """
@@ -74,14 +126,17 @@ class Watcher:
         th = st.thresholds
         cooldown = th.get("cooldown_min", DEFAULT_THRESHOLDS["cooldown_min"])
 
-        # Track pressures for fallback (bidirectional)
+        # Track pressures (causal windows)
         sensors = tick.get("sensors", {})
         p_tpt = sensors.get("P_TPT_bar") or sensors.get("P-TPT")
         if p_tpt is not None and isinstance(p_tpt, (int, float)):
-            st.pressure_history.append(p_tpt)
+            st.pressure_history.append(float(p_tpt))
         p_mon = sensors.get("P_MON_CKP_bar") or sensors.get("P-MON-CKP")
         if p_mon is not None and isinstance(p_mon, (int, float)):
-            st.pressure_mon_history.append(p_mon)
+            st.pressure_mon_history.append(float(p_mon))
+        p_jus = sensors.get("P_JUS_CKP_bar") or sensors.get("P-JUS-CKP")
+        if p_jus is not None and isinstance(p_jus, (int, float)):
+            st.pressure_jus_history.append(float(p_jus))
 
         # Check if we're in recheck mode
         is_recheck = (st.recheck_at_minute is not None and minute_index >= st.recheck_at_minute)
@@ -111,7 +166,6 @@ class Watcher:
         if margin is not None and not (isinstance(margin, float) and np.isnan(margin)):
             warn_band = th.get("margin_warn_band_C", DEFAULT_THRESHOLDS["margin_warn_band_C"])
             if 0 < margin <= warn_band:
-                # Check if margin is declining (we use the tick data directly)
                 if score < 0.4:
                     score = max(score, 0.4)
                     reason = reason or f"margin_C={margin:.1f} within warn band ({warn_band}C)"
@@ -120,30 +174,69 @@ class Watcher:
                 score = max(score, 0.7)
                 reason = reason or f"margin_C={margin:.1f} below equilibrium (danger)"
 
-        # --- Condition 3: Pressure change fallback (no model, no physics) ---
-        # Bidirectional: fires on both rises and drops in P-TPT or P-MON-CKP
-        if p_hydrate is None and margin is None:
-            # P-TPT bidirectional check
-            change_th = th.get("pressure_drop_bar_30min", DEFAULT_THRESHOLDS["pressure_drop_bar_30min"])
-            if len(st.pressure_history) >= 10:
-                p_start = st.pressure_history[0]
-                p_end = st.pressure_history[-1]
-                p_change = abs(p_end - p_start)
-                if p_change >= change_th:
-                    direction = "rose" if p_end > p_start else "dropped"
-                    score = max(score, 0.5)
-                    reason = reason or f"Pressure fallback: P_TPT {direction} {p_change:.1f} bar over {len(st.pressure_history)} min"
+        # --- Condition 3: Baseline-relative pressure change ---
+        # Always runs (supplements model/margin; not gated on their absence)
+        k = th.get("pressure_sigma_k", DEFAULT_THRESHOLDS["pressure_sigma_k"])
+        sustain_n = th.get("pressure_sigma_sustain_min", DEFAULT_THRESHOLDS["pressure_sigma_sustain_min"])
+        abs_floor = th.get("pressure_abs_floor_bar", DEFAULT_THRESHOLDS["pressure_abs_floor_bar"])
 
-            # P-MON-CKP bidirectional check (lower threshold for upstream gauge)
-            mon_th = th.get("pressure_mon_change_bar_60min", DEFAULT_THRESHOLDS["pressure_mon_change_bar_60min"])
-            if len(st.pressure_mon_history) >= 30:
-                pm_start = st.pressure_mon_history[0]
-                pm_end = st.pressure_mon_history[-1]
-                pm_change = abs(pm_end - pm_start)
-                if pm_change >= mon_th:
-                    direction = "rose" if pm_end > pm_start else "dropped"
-                    score = max(score, 0.45)
-                    reason = reason or f"Pressure fallback: P_MON_CKP {direction} {pm_change:.1f} bar over {len(st.pressure_mon_history)} min"
+        sigma_triggered = False
+        sigma_reason = None
+
+        # Check each monitored signal over 30-min and 60-min windows
+        signals = [
+            ("P_TPT", st.pressure_history, [30, 60]),
+            ("P_MON_CKP", st.pressure_mon_history, [30, 60]),
+        ]
+
+        # P-MON-CKP minus P-JUS-CKP differential if both available
+        if len(st.pressure_mon_history) >= 10 and len(st.pressure_jus_history) >= 10:
+            n_diff = min(len(st.pressure_mon_history), len(st.pressure_jus_history))
+            diff_deque: deque = deque(maxlen=_HISTORY_LEN)
+            mon_list = list(st.pressure_mon_history)
+            jus_list = list(st.pressure_jus_history)
+            for i in range(-n_diff, 0):
+                m = mon_list[i]
+                j = jus_list[i]
+                if m is not None and j is not None and np.isfinite(m) and np.isfinite(j):
+                    diff_deque.append(m - j)
+            if len(diff_deque) >= 10:
+                signals.append(("P_MON_minus_JUS", diff_deque, [30, 60]))
+
+        for sig_name, history, windows in signals:
+            for w in windows:
+                result = _change_over_window(history, w)
+                if result is None:
+                    continue
+                change, direction = result
+                if change < abs_floor:
+                    continue
+                std = _baseline_std(history, w)
+                if std is None:
+                    continue
+                # Use max(std, abs_floor/k) so flat sensors (std~0) need
+                # at least abs_floor change to trigger
+                effective_std = max(std, abs_floor / k)
+                if change >= k * effective_std:
+                    sigma_triggered = True
+                    n_sigma = change / effective_std
+                    sigma_reason = (
+                        f"Pressure anomaly: {sig_name} {direction} {change:.1f} bar "
+                        f"over {w} min ({n_sigma:.1f}\u03c3, threshold {k}\u03c3)"
+                    )
+                    break
+            if sigma_triggered:
+                break
+
+        if sigma_triggered:
+            st.consecutive_sigma += 1
+            if st.consecutive_sigma >= sustain_n:
+                new_score = 0.5
+                if score < new_score:
+                    score = new_score
+                    reason = reason or sigma_reason
+        else:
+            st.consecutive_sigma = 0
 
         # --- Condition 4: Look-alike probability (when model exists) ---
         p_lookalike = tick.get("p_lookalike")
