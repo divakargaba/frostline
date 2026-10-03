@@ -62,6 +62,34 @@ flowchart LR
     end
 ```
 
+## Scaling to Multiple Wells and Pipes
+
+The demo replays one instance, but the pipeline is per-instance by design, so scaling is mostly a delivery change, not a modelling one.
+
+**Already multi-well:** every processed row carries `well_id` / `instance_id`; `build_features()` accepts many instances and never lets a window cross between them; the classifier scores each minute independently, so N wells is one batched `predict()`; M3 thresholds are per well.
+
+**Pipes = lines per well.** 3W monitors wells, and each well has a production line and a service (gas-lift) line. These map to event classes: **8** hydrate in production line, **9** hydrate in service line. Covering both pipes is a diagnosis output (`hydrate_production_line` vs `hydrate_service_line`), not an extra stream. Sensors already span both: production side `P-TPT`, `T-TPT`, `P-MON-CKP`, `P-JUS-CKP`, `T-JUS-CKP`, `ABER-CKP`; service side `QGL` (gas-lift flow). A deployment that instruments more pipe segments adds them as extra sensor columns keyed by `pipe_id` under the same well.
+
+**Fleet changes (Div + Dashboard):**
+1. `GET /stream/fleet?instances=a,b,c` replays several instances on a shared clock (each recording shifted to a common start) and steps all of them one minute at a time.
+2. Every SSE event (`tick`, `watch_trigger`, `tool_call`, `tool_result`, `decision`) carries `well_id` and `instance_id` (plus `pipe_id` if added).
+3. Watcher state (cooldown, recheck) is keyed by well (and pipe). The LLM agent runs only on triggers, so LLM cost scales with alerts, not wells.
+4. Dashboard adds a fleet table ranked by hydrate risk (p_hydrate, margin, onset ETA, status); clicking a row opens the single-well view.
+
+```mermaid
+flowchart LR
+    W1[Well 1] & W2[Well 2] & WN[Well N] --> R[Fleet replay<br/>shared clock]
+    R --> F[Batched features + predict<br/>per instance]
+    F --> WA[Watcher<br/>state per well/pipe]
+    WA -->|trigger only| AG[LLM Agent]
+    AG --> D[Decision tagged<br/>well_id / pipe_id]
+    WA --> SSE[SSE fleet stream]
+    D --> SSE
+    SSE --> UI[Fleet table ranked by risk<br/>→ single-well view]
+```
+
+**Pitch angle:** this answers the case question directly ("Which wells need help right now?", "one crew checks the right well first") and is the scalability story for Commercialization. Production path: swap replay for a live historian feed (OPC UA / PI) per well; everything downstream is unchanged.
+
 ## Data Facts
 
 Verified from petrobras/3W, dataset v2.0.0, CC BY 4.0.
