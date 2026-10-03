@@ -290,7 +290,9 @@ function App() {
           <div hidden={page !== "live"}>
             <FleetDashboard />
           </div>
-          {!report && page !== "live" ? (
+          {!report && page === "experiments" ? (
+            <FleetResults />
+          ) : !report && page !== "live" ? (
             <div className="loading">
               <LoaderCircle className="spin" size={26} />
               <h2>Preparing the evidence</h2>

@@ -340,7 +340,12 @@ export default function LiveMission() {
             .catch(() => {});
         };
         stream.addEventListener("agent", (raw) => {
-          const event: AgentEvent = JSON.parse((raw as MessageEvent).data);
+          let event: AgentEvent;
+          try {
+            event = JSON.parse((raw as MessageEvent).data);
+          } catch {
+            return;
+          }
           if (event.id <= lastId.current || !alive) return;
           lastId.current = event.id;
           setRun((current) => (current ? applyEvent(current, event) : current));

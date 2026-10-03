@@ -387,7 +387,7 @@ function FieldMap({
         return (
           <button
             key={well.id}
-            className={`fleet-node ${well.status} ${selected === well.id ? "selected" : ""}`}
+            className={`fleet-node ${well.source_timestamp ? well.status : "pending"} ${selected === well.id ? "selected" : ""}`}
             style={{
               left: `${positions[index % 4][0]}%`,
               top: `${positions[index % 4][1]}%`,
@@ -487,7 +487,7 @@ function SensorChart({
               />
               <XAxis
                 dataKey="minute"
-                tick={{ fontSize: 8, fill: "#9ba797" }}
+                tick={{ fontSize: 11, fill: "#5f7168" }}
                 tickFormatter={(x: number) => `${x}m`}
                 axisLine={false}
                 tickLine={false}
@@ -678,6 +678,7 @@ export default function FleetDashboard() {
   );
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [dismissedRunError, setDismissedRunError] = useState("");
   const [sheet, setSheet] = useState<"evidence" | "fault" | null>(null);
   const [observing, setObserving] = useState(false);
   const [note, setNote] = useState("");
@@ -686,17 +687,34 @@ export default function FleetDashboard() {
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
   useEffect(() => {
-    api<FleetCatalog>("/catalog")
-      .then((value) => {
-        setCatalog(value);
-        // A reconnecting session owns its speed; a later catalog response must
-        // not overwrite the value already restored from the server.
-        if (!sessionId) {
-          setSpeed(value.default_speed);
-          setMode(value.default_mode || "guided");
-        }
-      })
-      .catch((e) => setError(e.message));
+    let disposed = false;
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    const load = () => {
+      api<FleetCatalog>("/catalog")
+        .then((value) => {
+          if (disposed) return;
+          setCatalog(value);
+          setError("");
+          // A reconnecting session owns its speed; a later catalog response must
+          // not overwrite the value already restored from the server.
+          if (!sessionId) {
+            setSpeed(value.default_speed);
+            setMode(value.default_mode || "guided");
+          }
+        })
+        .catch((e) => {
+          if (disposed) return;
+          // The API may still be starting; keep trying instead of leaving
+          // Start disabled until a manual reload.
+          setError(`${e.message} Retrying…`);
+          retry = setTimeout(load, 3000);
+        });
+    };
+    load();
+    return () => {
+      disposed = true;
+      clearTimeout(retry);
+    };
   }, []);
   useEffect(() => {
     if (!notice) return;
@@ -734,13 +752,11 @@ export default function FleetDashboard() {
       setConnected(false);
       setNotice("The server restarted. Start a new field replay.");
     };
-    api<FleetRun>(`/sessions/${sessionId}`)
-      .then((snapshot) => {
+    let reopen: ReturnType<typeof setTimeout> | undefined;
+    const open = (after: number) => {
         if (disposed) return;
-        apply(snapshot);
-        if (finished(snapshot.status)) return;
         const stream = new EventSource(
-          `/api/fleet/sessions/${sessionId}/events?after=${snapshot.last_event_id}`,
+          `/api/fleet/sessions/${sessionId}/events?after=${after}`,
         );
         source.current = stream;
         stream.onopen = () => {
@@ -760,18 +776,38 @@ export default function FleetDashboard() {
               }
             }
           } catch {
-            setError("A live update could not be read. Reconnecting…");
+            setError("A live update could not be read.");
           }
         });
         stream.onerror = () => {
           if (disposed) return;
           setConnected(false);
+          // A non-200 response closes an EventSource for good, so reopen it
+          // ourselves; while it is still CONNECTING the browser retries.
+          const closed = stream.readyState === EventSource.CLOSED;
+          const retry = () => {
+            if (disposed || !closed) return;
+            stream.close();
+            clearTimeout(reopen);
+            reopen = setTimeout(() => open(lastEvent.current), 2000);
+          };
           api<FleetRun>(`/sessions/${sessionId}`)
-            .then(apply)
+            .then((snapshot) => {
+              apply(snapshot);
+              if (!finished(snapshot.status)) retry();
+            })
             .catch((e) => {
               if (e instanceof ApiError && e.status === 404) resetMissing();
+              else retry();
             });
         };
+    };
+    api<FleetRun>(`/sessions/${sessionId}`)
+      .then((snapshot) => {
+        if (disposed) return;
+        apply(snapshot);
+        if (finished(snapshot.status)) return;
+        open(snapshot.last_event_id);
       })
       .catch((e) => {
         if (disposed) return;
@@ -780,6 +816,7 @@ export default function FleetDashboard() {
       });
     return () => {
       disposed = true;
+      clearTimeout(reopen);
       source.current?.close();
       setConnected(false);
     };
@@ -815,12 +852,16 @@ export default function FleetDashboard() {
     setStarting(true);
     setActionFeedback(null);
     setError("");
-    source.current?.close();
     try {
+      // Apply the cancelled snapshot so a failed create does not leave a dead
+      // run on screen that still looks paused.
       if (run && !finished(run.status))
-        await api<FleetRun>(`/sessions/${run.id}/control`, {
-          action: "cancel",
-        });
+        accept(
+          await api<FleetRun>(`/sessions/${run.id}/control`, {
+            action: "cancel",
+          }),
+        );
+      source.current?.close();
       const next = await api<FleetRun>("/sessions", { speed, mode });
       lastEvent.current = next.last_event_id;
       setRun(next);
@@ -1031,6 +1072,8 @@ export default function FleetDashboard() {
       !item.incident.completed &&
       !item.incident.condition_cleared,
   ).length;
+  const runError =
+    run?.error && run.error !== dismissedRunError ? run.error : "";
   const reliable = wells.filter(
     (item) => item.frames.length && item.quality.status === "good",
   ).length;
@@ -1202,18 +1245,32 @@ export default function FleetDashboard() {
               aria-label="Restart field replay"
               title="Restart field replay"
               disabled={busy || preparing}
-              onClick={() => void start()}
+              onClick={() => {
+                if (
+                  finished(run.status) ||
+                  window.confirm(
+                    "Restart the field replay? The current run will be discarded.",
+                  )
+                )
+                  void start();
+              }}
             >
               <RotateCcw size={15} />
             </button>
           )}
         </div>
       </header>
-      {(error || run?.error) && (
+      {(error || runError) && (
         <div className="fleet-notice error" role="alert">
           <CircleAlert size={16} />
-          <span>{error || run?.error}</span>
-          <button aria-label="Dismiss error" onClick={() => setError("")}>
+          <span>{error || runError}</span>
+          <button
+            aria-label="Dismiss error"
+            onClick={() => {
+              setError("");
+              setDismissedRunError(run?.error || "");
+            }}
+          >
             <X size={15} />
           </button>
         </div>
@@ -1298,7 +1355,11 @@ export default function FleetDashboard() {
           icon={<MessageSquare size={18} />}
         />
         <Kpi
-          value={`${reliable} / ${wells.length}`}
+          value={
+            wells.some((item) => item.source_timestamp)
+              ? `${reliable} / ${wells.length}`
+              : "—"
+          }
           label="Reliable feeds"
           icon={<Radio size={18} />}
         />
@@ -1325,7 +1386,7 @@ export default function FleetDashboard() {
               <div>
                 <h2>
                   {well.name}{" "}
-                  <span style={{ color: "#a2aea0", fontWeight: 400 }}> / </span>{" "}
+                  <span style={{ color: "#5f7168", fontWeight: 400 }}> / </span>{" "}
                   Trends
                 </h2>
                 <small>
@@ -1411,7 +1472,9 @@ export default function FleetDashboard() {
                     <span className="fleet-queue-rank">
                       {String(index + 1).padStart(2, "0")}
                     </span>
-                    <i className={`fleet-dot ${item.status}`} />
+                    <i
+                      className={`fleet-dot ${item.source_timestamp ? item.status : "pending"}`}
+                    />
                     <span className="fleet-queue-copy">
                       <strong>{item.name}</strong>
                       <small>
@@ -1445,8 +1508,12 @@ export default function FleetDashboard() {
                 <Sparkles size={12} />
                 {well.name} · EVIDENCE REVIEW
               </div>
-              <span className={`fleet-status ${well.status}`}>
-                <i className={`fleet-dot ${well.status}`} />
+              <span
+                className={`fleet-status ${well.source_timestamp ? well.status : "pending"}`}
+              >
+                <i
+                  className={`fleet-dot ${well.source_timestamp ? well.status : "pending"}`}
+                />
                 {well.source_timestamp
                   ? stateNames[well.status]
                   : "Awaiting first check"}
@@ -1594,7 +1661,7 @@ export default function FleetDashboard() {
                       </button>
                       <button
                         className="fleet-button"
-                        disabled={busy}
+                        disabled={busy || !!well.incident?.completed}
                         onClick={() => void incidentAction("complete")}
                       >
                         {savingAction === "complete" && (
@@ -2090,7 +2157,10 @@ export default function FleetDashboard() {
               className="fleet-button"
               disabled={busy || !run?.fault}
               onClick={() => {
-                void command("inject", { well_id: well.id, fault: "restore" });
+                void command("inject", {
+                  well_id: run?.fault?.well_id ?? well.id,
+                  fault: "restore",
+                });
                 setSheet(null);
               }}
             >
@@ -2171,7 +2241,7 @@ type FleetReport = {
   }[];
   stages: { id: string; name: string; metrics: FleetMetrics }[];
   limits: string[];
-  recordings: { well_id: string; file: string; hydrate_events: number }[];
+  recordings: { well_id: string; file: string; hydrate_event: boolean }[];
   model_comparison?: {
     id: string;
     qualifies: boolean;
@@ -2232,7 +2302,7 @@ export function FleetResults() {
   )?.metrics;
   const hydrateWells = new Set(
     report.recordings
-      .filter((record) => record.hydrate_events > 0)
+      .filter((record) => record.hydrate_event)
       .map((record) => record.well_id),
   ).size;
   return (
