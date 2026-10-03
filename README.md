@@ -2,13 +2,27 @@
 
 A Case 9 prototype for offshore operators: four independent Petrobras 3W sensor replays, a trained event model, a priority queue and an agent that investigates changing evidence. The interface keeps the map, trends and next operator action together.
 
-**Current verification:** numerical monitoring, scenario-specific checklists, saved operator findings, scheduled rechecks and incident recovery run locally. **LLM investigations are deferred and disabled in public replay sessions**, even if a key exists. The retained adapter has mocked tests only. No production sensor connection or equipment control is claimed.
+**Current verification:** numerical monitoring, scenario-specific checklists, saved operator findings, scheduled rechecks and incident recovery run locally. LLM investigations use a multi-provider pool (Gemini → Groq → OpenRouter) when keys are configured; otherwise the deterministic rule-based pipeline handles all decisions. BM25 RAG over 14 playbook documents supports evidence-grounded operator briefs. No production sensor connection or equipment control is claimed.
 
 ## Run the dashboard
 
-Tested locally with Python 3.14 and Node 24. Use Python 3.12+ and Node 22.12+ (Vite 8).
+Tested locally with Python 3.11–3.14 and Node 22–24. Use Python 3.11+ and Node 22.12+ (Vite 8).
+
+```bash
+# macOS / Linux
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+bash scripts/fetch_3w.sh
+python scripts/fetch_research_data.py
+python scripts/train_fleet_model.py
+python scripts/train_model.py
+cd frontend && npm ci && npm run build && cd ..
+uvicorn backend.main:app --host 127.0.0.1 --port 8000
+```
 
 ```powershell
+# Windows
 python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements-research.txt
 .venv/Scripts/python scripts/fetch_research_data.py
@@ -124,6 +138,18 @@ This separate seed workflow is a **stateful deterministic controller with condit
 
 `CLAUDE.md` and older modules also describe a broader planned architecture. Hydrate thermodynamics, inhibitor dosing, blockage forecasting, vector retrieval and voice remain **unimplemented**. Their original tests remain marked `pending`. The fleet retains a deferred LLM tool loop and small project-guidance search; public runs use the deterministic evidence checks. The dashboard does not use the hand-authored metrics in `frontend/mocks/`.
 
+## Combined results: baseline to agent pipeline
+
+| System | Description | Caught | Total | False alarms/day | Notes |
+|---|---|---:|---:|---:|---|
+| B0 | Always normal | 0 | 12 | 0.0 | Baseline |
+| B1 | 5th-percentile pressure | 5 | 12 | 0.0 | Hackathon starter |
+| B1-revised | Autonomous policy selection | 10 | 12 | 0.0 | +5 events, 0 added FA |
+| M1 | LightGBM 5-class (3W real) | 9 | 9 | 0.88 | LOWO, AUC 0.949 |
+| M3 | Agent + ML + physics + RAG | 9 | 9 | 0.88 | Full pipeline |
+
+B0–B1-revised use the official Case 9 seed (720 hourly rows). M1–M3 use 3W real wells with leave-one-well-out cross-validation (143 features, 104k labelled minutes). The improvement round (B1 → B1-revised) moves from 5th-percentile pressure to an autonomously selected P20 pressure + P10 temperature/flow confirmation policy, catching 5 additional events with zero added false alarms. M3 adds per-well retuned thresholds, BM25 RAG playbook retrieval, and LLM-guided investigation when providers are available.
+
 ## Reproduce the seed experiment
 
 ```powershell
@@ -189,7 +215,10 @@ flowchart LR
   P --> W[Per-well watcher and priority queue]
   W --> A[Local scenario and evidence checks]
   A --> V[Incident checklist and evidence comparison]
-  A -. Deferred optional integration .-> L[Bounded LLM adapter]
+  A --> L[LLM agent · Gemini/Groq/OpenRouter pool]
+  L --> RAG[BM25 RAG · 14 playbook docs]
+  RAG --> L
+  L --> V
   V --> R[Operator action and scheduled recheck]
   R --> W
   P --> API[FastAPI JSON and SSE]

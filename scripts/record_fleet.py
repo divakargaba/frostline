@@ -1,74 +1,48 @@
 #!/usr/bin/env python3
-"""Record a fleet demo with real LLM decisions.
+"""Record a fleet demo directly (no running server needed).
 
 Usage:
-    LLM_MIN_INTERVAL_S=15 python scripts/record_fleet.py
+    python scripts/record_fleet.py              # rules-only
+    LLM_MODE=live python scripts/record_fleet.py  # with LLM (needs GEMINI_API_KEY)
 
-Requires GEMINI_API_KEY in .env. Wait for Gemini quota to reset if needed
-(free tier: 20 requests/day, resets every few hours).
+Output: data/demo/fleet-recording-<session_id>.json
 """
 import asyncio
 import json
-import logging
+import os
 import sys
+import time
 
-logging.basicConfig(level=logging.INFO, format="%(name)s %(message)s")
-
-from backend.fleet import create_session, run_fleet_stream
+os.environ.setdefault("LLM_MODE", "mock")
 
 
 async def main():
-    session = create_session(speed=6000, agent=True, mode="live", record=True)
-    print(f"Session: {session.session_id}")
-    print(f"Recording to: {session.recording_path}")
-    print(f"Wells: {len(session.wells)}, max_minutes: {session.max_minutes}")
+    from backend.fleet import FleetSession, safe
 
-    queue = asyncio.Queue(maxsize=50000)
-    session.subscribers.append(queue)
-    await run_fleet_stream(session, queue)
+    use_llm = os.environ.get("LLM_MODE") == "live"
+    session = FleetSession(speed=6000, use_llm=use_llm, mode="continuous")
+    print(f"Session: {session.id}")
+    print(f"LLM: {'live' if use_llm else 'rules-only'}")
+    print(f"Wells: {list(session.wells.keys())}")
 
-    events = []
-    while not queue.empty():
-        events.append(queue.get_nowait())
+    start = time.time()
+    await session.run()
+    elapsed = time.time() - start
 
-    assessments = [e for e in events if e["type"] == "fleet_assessment"]
-    tool_calls = [e for e in events if e["type"] == "fleet_tool_call"]
+    snap = session.snapshot()
+    print(f"\nCompleted in {elapsed:.1f}s, {snap['index']}/{snap['total']} minutes")
 
-    print(f"\n=== RESULTS ===")
-    print(f"Assessments: {len(assessments)}")
-    print(f"LLM attempts: {session.llm_attempts_used}")
+    for w in snap["wells"]:
+        print(f"  {w['well_id']}: status={w['status']}, investigation={w['investigation']}")
 
-    all_from_llm = True
-    for i, a in enumerate(assessments):
-        d = a["data"]
-        src = d["source"]
-        if src != "agent":
-            all_from_llm = False
-        agent_tools = [tc["data"]["tool"] for tc in tool_calls
-                       if tc["data"]["well_id"] == d["well_id"]
-                       and tc["data"].get("requested_by") == "agent"]
-        sp = any(tc["data"]["tool"] == "search_playbook" for tc in tool_calls
-                 if tc["data"]["well_id"] == d["well_id"])
-        print(f"\n  #{i+1} {d['display_id']}: {d['decision']} (source={src})")
-        print(f"     Agent tools: {agent_tools}")
-        print(f"     search_playbook: {sp}")
-        print(f"     Brief: {d['brief'][:120]}")
-
-    if all_from_llm:
-        # Update fleet.json to point at this recording
-        manifest_path = "data/demo/fleet.json"
-        manifest = json.loads(open(manifest_path).read())
-        manifest["demo_recording"] = session.recording_path.name
-        with open(manifest_path, "w") as f:
-            json.dump(manifest, f, indent=2)
-            f.write("\n")
-        print(f"\n✓ All decisions from LLM. Updated fleet.json -> {session.recording_path.name}")
-    else:
-        print(f"\n✗ Some decisions from fallback. Recording NOT linked in fleet.json.")
-        print("  Wait for Gemini quota to reset and re-run.")
-        sys.exit(1)
-
-    print(f"\nRecording: {session.recording_path}")
+    # Export
+    os.makedirs("data/demo", exist_ok=True)
+    outfile = f"data/demo/fleet-recording-{session.id[:8]}.json"
+    payload = {"run": snap, "audit": session.audit, "events": session.events,
+               "method": "Four independent historical excerpts. Labels are excluded from runtime."}
+    with open(outfile, "w") as f:
+        json.dump(safe(payload), f, indent=2, allow_nan=False)
+    print(f"\nSaved: {outfile} ({os.path.getsize(outfile) / 1024:.0f} KB)")
 
 
 if __name__ == "__main__":

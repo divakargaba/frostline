@@ -1,0 +1,6 @@
+name,description,caught,total_events,missed,false_alarms_per_day,mean_lead_time_min,misdiagnosis_rate,notes
+B0,Always normal — no detection,0,12,12,0.0,,0.0,Baseline: exposes misleading accuracy
+B1,5th-percentile pressure cutoff,5,12,7,0.0,420.0,0.0,"Official hackathon starter (agent_starter.py), seed data"
+B1-revised,Autonomously selected policy (P20 pressure + P10 confirmation),10,12,2,0.0,60.0,0.0,"Improvement round: 24-trial grid search on validation cost, policy 9ebaabad52ad"
+M1,LightGBM 5-class classifier (threshold 0.3),9,9,0,0.88,,0.0,"3W real wells (LOWO), 143 features, AUC 0.949"
+M3,Agent + ML + physics + per-well retuned thresholds,9,9,0,0.88,,0.0,"Full pipeline: watcher triggers, LLM agent reviews evidence, BM25 RAG playbook"

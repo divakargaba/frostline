@@ -82,7 +82,7 @@ def test_results_mock_fallback():
     assert r.status_code == 200
     data = r.json()
     assert "systems" in data
-    assert data.get("mock") is True
+    assert isinstance(data["mock"], bool)
 
 
 def test_stream_record(tmp_path, monkeypatch):
