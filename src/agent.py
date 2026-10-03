@@ -355,7 +355,7 @@ def run_agent(ctx: AgentContext, trigger: dict,
     start = time.time()
 
     for round_num in range(max_requests):
-        if time.time() - start > 60:
+        if time.time() - start > 300:
             log.warning("Agent timeout after %.1fs", time.time() - start)
             break
 

@@ -73,8 +73,8 @@ class TestTrigger:
         """P-MON-CKP sustained rise above threshold triggers fallback."""
         w = Watcher()
         for i in range(35):
-            # P-MON-CKP rises 1.0 bar over 35 min (above 0.8 threshold)
-            pm = 52.0 + i * (1.0 / 34)
+            # P-MON-CKP rises 4.0 bar over 35 min (above 3.0 threshold)
+            pm = 52.0 + i * (4.0 / 34)
             tick = {"t": f"2024-01-07T08:{i:02d}", "p_hydrate": None, "margin_C": None,
                     "sensors": {"P_MON_CKP_bar": pm}}
             result = w.check_tick(tick, "WELL-00019", i)

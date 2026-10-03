@@ -152,6 +152,7 @@ class OpenAICompatClient(LLMClient):
             api_key=api_key,
             default_headers=extra_headers,
             timeout=timeout,
+            max_retries=0,  # we handle retries ourselves
         )
         self._total_tokens = 0
         self._last_call_ts = 0.0
@@ -182,9 +183,8 @@ class OpenAICompatClient(LLMClient):
         except Exception as e:
             code = getattr(e, "status_code", 0)
             log.warning("Health check failed for %s: %s (code=%s)", self.provider, e, code)
-            if code == 429:
-                self.disabled = True
-                self._disable_reason = "rate_limited"
+            # Don't disable on 429 — rate limits are transient
+            # The chat() method will handle retries when actually called
             return False
 
     def disable(self, reason: str = ""):
@@ -225,7 +225,8 @@ class OpenAICompatClient(LLMClient):
             model = self._pool[self._current_pool_idx]
             kwargs["model"] = model
 
-            for attempt in range(2):
+            max_retries = 4  # generous retries for 429s
+            for attempt in range(max_retries):
                 try:
                     resp = self._client.chat.completions.create(**kwargs)
 
@@ -273,23 +274,21 @@ class OpenAICompatClient(LLMClient):
                 except Exception as e:
                     code = getattr(e, "status_code", 0)
                     if code == 429:
-                        wait = 2 ** (attempt + 1)
+                        # Honor Retry-After header, default to exponential backoff 20-60s
+                        wait = min(20 * (2 ** attempt), 60)
                         if hasattr(e, "response") and hasattr(e.response, "headers"):
                             ra = e.response.headers.get("Retry-After")
                             if ra:
                                 try:
-                                    wait = min(int(ra), 10)
+                                    wait = min(max(int(ra), 20), 60)
                                 except ValueError:
                                     pass
-                        log.warning("429 from %s/%s, waiting %ds", self.provider, model, wait)
+                        log.warning("429 from %s/%s, retry %d/%d, waiting %ds",
+                                    self.provider, model, attempt + 1, max_retries, wait)
                         time.sleep(wait)
-                        if attempt == 0:
-                            continue
-                        # Mark disabled on second 429
-                        self.disable("rate_limited_429")
-                        break
+                        continue  # always retry, don't disable
                     elif code in (500, 502, 503):
-                        if attempt == 0:
+                        if attempt < 2:
                             time.sleep(2)
                             continue
                         break
@@ -459,12 +458,11 @@ def _get_or_build_pool() -> ProviderPool | None:
     _pool_checked = True
     _provider_pool = _build_provider_pool()
     if _provider_pool:
-        # Quick health check on each provider at startup
+        # Quick health check on each provider at startup (non-blocking: don't disable on failure)
         for p in _provider_pool.providers:
             ok = p.check_health()
             if not ok:
-                log.warning("Provider %s failed health check — disabling", p.provider)
-                p.disable("health_check_failed")
+                log.warning("Provider %s failed health check (may be transient)", p.provider)
             else:
                 log.info("Provider %s healthy (%s)", p.provider, p.model)
     return _provider_pool
