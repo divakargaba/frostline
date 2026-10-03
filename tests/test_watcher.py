@@ -38,13 +38,25 @@ class TestTrigger:
         assert result is not None
 
     def test_fallback_rule_no_model_no_physics(self):
-        """When both model and physics are missing, pressure-based fallback fires."""
+        """When both model and physics are missing, pressure drop fallback fires."""
         w = Watcher()
-        tick = {"t": "2024-01-07T08:00", "p_hydrate": None, "margin_C": None,
-                "sensors": {"P_TPT_bar": 250.0}}
-        result = w.check_tick(tick, "WELL-00019", 0)
+        # Feed 15 ticks with a pressure drop of 10 bar (above 5 bar threshold)
+        for i in range(15):
+            p = 280.0 - i * (10.0 / 14)  # drops from 280 to 270
+            tick = {"t": f"2024-01-07T08:{i:02d}", "p_hydrate": None, "margin_C": None,
+                    "sensors": {"P_TPT_bar": p}}
+            result = w.check_tick(tick, "WELL-00019", i)
         assert result is not None
         assert "Pressure fallback" in result["reason"]
+
+    def test_no_fallback_without_pressure_drop(self):
+        """Stable pressure should not trigger fallback."""
+        w = Watcher()
+        for i in range(15):
+            tick = {"t": f"2024-01-07T08:{i:02d}", "p_hydrate": None, "margin_C": None,
+                    "sensors": {"P_TPT_bar": 133.0}}  # Stable, even if "low"
+            result = w.check_tick(tick, "WELL-00019", i)
+        assert result is None
 
 
 class TestCooldown:
@@ -60,7 +72,7 @@ class TestCooldown:
         # Record decision
         w.record_decision("WELL-00019", "ALERT", 2, score=0.85)
 
-        # 2 minutes later — still in cooldown (default 30 min)
+        # 2 minutes later — still in cooldown (default 60 min)
         result2 = w.check_tick(tick, "WELL-00019", 4)
         assert result2 is None
 
@@ -69,10 +81,10 @@ class TestCooldown:
         tick = {"t": "2024-01-07T08:00", "p_hydrate": 0.85, "margin_C": None, "sensors": {}}
         w.record_decision("WELL-00019", "ALERT", 0, score=0.85)
 
-        # After cooldown (31 min later)
-        w.check_tick(tick, "WELL-00019", 31)
-        w.check_tick(tick, "WELL-00019", 32)
-        result = w.check_tick(tick, "WELL-00019", 33)
+        # After cooldown (61 min later, default cooldown=60)
+        w.check_tick(tick, "WELL-00019", 61)
+        w.check_tick(tick, "WELL-00019", 62)
+        result = w.check_tick(tick, "WELL-00019", 63)
         assert result is not None
 
 

@@ -129,10 +129,13 @@ class TestFallbacks:
         result = tool_methanol_dose(ctx)
         assert result["available"] is False
 
-    def test_search_playbook_unavailable(self):
+    def test_search_playbook_returns_results(self):
         ctx = _make_ctx()
         result = tool_search_playbook(ctx)
-        assert result["available"] is False
+        assert result["available"] is True
+        assert result["source"] == "rag"
+        assert len(result["results"]) > 0
+        assert "title" in result["results"][0]
 
 
 class TestDispatch:

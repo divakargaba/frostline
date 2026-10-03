@@ -1,10 +1,10 @@
-"""Tests for src/llm.py — MockLLMClient, response normalization, fallback.
+"""Tests for src/llm.py — MockLLMClient, model rotation, budget tracking.
 
 No network calls. All tests use MockLLMClient.
 """
 import os
 import pytest
-from src.llm import MockLLMClient, LLMResponse, ToolCall, get_llm_client
+from src.llm import MockLLMClient, LLMResponse, ToolCall, get_llm_client, LLMUsageTracker
 
 
 class TestMockLLMClient:
@@ -45,7 +45,6 @@ class TestGetLLMClient:
         monkeypatch.setenv("OPENROUTER_API_KEY", "")
         monkeypatch.setenv("OPENROUTER_MODEL", "")
         monkeypatch.setenv("LLM_MODE", "")
-        # Force reimport
         import importlib
         import backend.config
         importlib.reload(backend.config)
@@ -75,3 +74,25 @@ class TestLLMResponse:
         assert r.content == "hello"
         assert r.model == "test"
         assert r.cost_estimate == 0.001
+
+
+class TestUsageTracker:
+    def test_records_and_counts(self, tmp_path, monkeypatch):
+        import src.llm
+        monkeypatch.setattr(src.llm, "USAGE_PATH", tmp_path / "usage.json")
+        tracker = LLMUsageTracker()
+        tracker.record("model-a", 100)
+        tracker.record("model-b", 200)
+        assert tracker.requests_last_minute() == 2
+        assert tracker.requests_last_day() == 2
+        summary = tracker.summary()
+        assert summary["total_requests"] == 2
+        assert summary["total_tokens"] == 300
+
+    def test_summary_empty(self, tmp_path, monkeypatch):
+        import src.llm
+        monkeypatch.setattr(src.llm, "USAGE_PATH", tmp_path / "usage.json")
+        tracker = LLMUsageTracker()
+        s = tracker.summary()
+        assert s["requests_last_minute"] == 0
+        assert s["total_tokens"] == 0

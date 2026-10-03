@@ -1,4 +1,4 @@
-"""Tests for src/agent.py — LLM tool-calling agent loop.
+"""Tests for src/agent.py — two-round LLM tool-calling agent loop.
 
 Owner: Div
 
@@ -6,6 +6,7 @@ Uses MockLLMClient — no API key needed, no network.
 """
 import json
 import os
+import shutil
 
 os.environ["LLM_MODE"] = "mock"
 os.environ["OPENROUTER_API_KEY"] = ""
@@ -19,6 +20,7 @@ from unittest.mock import patch
 from src.agent import (
     run_agent, cache_decision, get_cached_decision,
     _build_rule_fallback, get_mock_client_for_scenario,
+    CACHE_DIR, LLM_MAX_REQUESTS_PER_RUN,
 )
 from src.llm import MockLLMClient, LLMResponse, ToolCall
 from src.tools import AgentContext
@@ -53,9 +55,15 @@ def _trigger(t="2024-01-01T01:39:00"):
     return {"t": t, "reason": "p_hydrate >= 0.5 for 3+ min", "score": 0.72}
 
 
-class TestHydratePath:
-    def test_hydrate_ends_alert_or_watch(self):
-        """Mock hydrate scenario should produce tool_call, tool_result, and decision."""
+def _cleanup_cache():
+    if CACHE_DIR.exists():
+        shutil.rmtree(CACHE_DIR)
+
+
+class TestTwoRoundFlow:
+    def test_hydrate_ends_alert(self):
+        """Mock hydrate scenario should produce ALERT with search_playbook."""
+        _cleanup_cache()
         ctx = _make_ctx(has_event=True)
         mock_client = get_mock_client_for_scenario("hydrate")
 
@@ -67,57 +75,42 @@ class TestHydratePath:
         assert "tool_result" in types
         assert "decision" in types
 
-        # Decision should be present (via rule fallback since mock doesn't produce JSON)
         decision = [e for e in events if e["type"] == "decision"][0]["data"]
-        assert decision["decision"] in ("ALERT", "WATCH", "DISMISS")
+        assert decision["decision"] == "ALERT"
 
-    def test_emits_correct_tool_sequence(self):
-        """Mock hydrate scenario calls tools in the expected order."""
+    def test_scaling_ends_dismiss(self):
+        """Mock scaling scenario should produce DISMISS."""
+        _cleanup_cache()
+        ctx = _make_ctx(has_event=False)
+        mock_client = get_mock_client_for_scenario("scaling")
+
+        with patch("src.agent.get_llm_client", return_value=mock_client):
+            events = list(run_agent(ctx, _trigger()))
+
+        decision = [e for e in events if e["type"] == "decision"][0]["data"]
+        assert decision["decision"] == "DISMISS"
+
+    def test_pre_run_tools_labeled_system(self):
+        """Pre-run tools (get_window, classify_event) should have requested_by=system."""
+        _cleanup_cache()
         ctx = _make_ctx(has_event=True)
         mock_client = get_mock_client_for_scenario("hydrate")
 
         with patch("src.agent.get_llm_client", return_value=mock_client):
             events = list(run_agent(ctx, _trigger()))
 
-        tool_calls = [e["data"]["tool"] for e in events if e["type"] == "tool_call"]
-        assert "get_window" in tool_calls
-        assert "classify_event" in tool_calls
+        tool_calls = [e for e in events if e["type"] == "tool_call"]
+        system_calls = [tc for tc in tool_calls if tc["data"].get("requested_by") == "system"]
+        agent_calls = [tc for tc in tool_calls if tc["data"].get("requested_by") == "agent"]
 
+        system_tools = [tc["data"]["tool"] for tc in system_calls]
+        assert "get_window" in system_tools
+        assert "classify_event" in system_tools
+        assert len(agent_calls) > 0
 
-class TestScalingPath:
-    def test_scaling_different_from_hydrate(self):
-        """Mock scaling scenario should take a different path than hydrate."""
-        ctx_hydrate = _make_ctx(has_event=True)
-        ctx_scaling = _make_ctx(has_event=False)
-        mock_h = get_mock_client_for_scenario("hydrate")
-        mock_s = get_mock_client_for_scenario("scaling")
-
-        with patch("src.agent.get_llm_client", return_value=mock_h):
-            events_h = list(run_agent(ctx_hydrate, _trigger()))
-        # Clear cache for scaling
-        import shutil
-        from src.agent import CACHE_DIR
-        if CACHE_DIR.exists():
-            shutil.rmtree(CACHE_DIR)
-
-        with patch("src.agent.get_llm_client", return_value=mock_s):
-            events_s = list(run_agent(ctx_scaling, _trigger()))
-
-        # Both should produce valid decisions
-        dec_h = [e for e in events_h if e["type"] == "decision"][0]["data"]
-        dec_s = [e for e in events_s if e["type"] == "decision"][0]["data"]
-        assert dec_h["decision"] in ("ALERT", "WATCH", "DISMISS")
-        assert dec_s["decision"] in ("ALERT", "WATCH", "DISMISS")
-        # Scaling scenario calls fewer tools
-        tc_h = len([e for e in events_h if e["type"] == "tool_call"])
-        tc_s = len([e for e in events_s if e["type"] == "tool_call"])
-        assert tc_s <= tc_h
-
-
-class TestMaxToolCalls:
-    def test_stops_at_eight_calls(self):
-        """Agent loop must stop after 8 tool calls even if LLM keeps calling."""
-        # Create a mock that always returns tool calls
+    def test_uses_at_most_max_requests(self):
+        """Agent should use at most LLM_MAX_REQUESTS_PER_RUN LLM requests."""
+        _cleanup_cache()
         infinite_calls = [
             LLMResponse(
                 content=None,
@@ -133,8 +126,19 @@ class TestMaxToolCalls:
         with patch("src.agent.get_llm_client", return_value=mock_client):
             events = list(run_agent(ctx, _trigger()))
 
-        tool_calls = [e for e in events if e["type"] == "tool_call"]
-        assert len(tool_calls) <= 8
+        assert len(mock_client.calls) <= LLM_MAX_REQUESTS_PER_RUN
+
+    def test_search_playbook_in_hydrate_trace(self):
+        """Mock hydrate scenario should call search_playbook."""
+        _cleanup_cache()
+        ctx = _make_ctx(has_event=True)
+        mock_client = get_mock_client_for_scenario("hydrate")
+
+        with patch("src.agent.get_llm_client", return_value=mock_client):
+            events = list(run_agent(ctx, _trigger()))
+
+        tool_calls = [e["data"]["tool"] for e in events if e["type"] == "tool_call"]
+        assert "search_playbook" in tool_calls
 
 
 class TestRuleFallback:
@@ -172,17 +176,61 @@ class TestCaching:
         assert cached is None
 
     def test_agent_cache_returns_identical_events(self):
-        """Second run with same params should return cached events."""
+        _cleanup_cache()
         ctx = _make_ctx(has_event=True)
         mock_client = get_mock_client_for_scenario("hydrate")
 
         with patch("src.agent.get_llm_client", return_value=mock_client):
             events1 = list(run_agent(ctx, _trigger()))
 
-        # Second run — should hit cache (no mock client needed)
         with patch("src.agent.get_llm_client", return_value=MockLLMClient()):
             events2 = list(run_agent(ctx, _trigger()))
 
         assert len(events1) == len(events2)
         for e1, e2 in zip(events1, events2):
             assert e1["type"] == e2["type"]
+
+    def test_cache_hit_uses_zero_requests(self):
+        _cleanup_cache()
+        ctx = _make_ctx(has_event=True)
+        mock_client = get_mock_client_for_scenario("hydrate")
+
+        with patch("src.agent.get_llm_client", return_value=mock_client):
+            list(run_agent(ctx, _trigger()))
+
+        fresh_mock = MockLLMClient()
+        with patch("src.agent.get_llm_client", return_value=fresh_mock):
+            events2 = list(run_agent(ctx, _trigger()))
+
+        assert len(fresh_mock.calls) == 0
+        assert len(events2) > 0
+
+
+class TestCacheOnly:
+    def test_cache_only_never_calls_llm(self):
+        _cleanup_cache()
+        ctx = _make_ctx(has_event=False)
+        mock_client = MockLLMClient()
+
+        with patch("src.agent.get_llm_client", return_value=mock_client):
+            events = list(run_agent(ctx, _trigger(), cache_only=True))
+
+        assert len(mock_client.calls) == 0
+        decisions = [e for e in events if e["type"] == "decision"]
+        assert len(decisions) == 1
+        assert decisions[0]["data"]["source"] == "rule_fallback"
+
+    def test_cache_only_uses_cache_when_available(self):
+        _cleanup_cache()
+        ctx = _make_ctx(has_event=True)
+        mock_client = get_mock_client_for_scenario("hydrate")
+
+        with patch("src.agent.get_llm_client", return_value=mock_client):
+            events1 = list(run_agent(ctx, _trigger()))
+
+        fresh_mock = MockLLMClient()
+        with patch("src.agent.get_llm_client", return_value=fresh_mock):
+            events2 = list(run_agent(ctx, _trigger(), cache_only=True))
+
+        assert len(fresh_mock.calls) == 0
+        assert len(events1) == len(events2)
