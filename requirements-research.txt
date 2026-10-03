@@ -1,0 +1,11 @@
+# Working research prototype; optional LLM/voice/physics libraries are not needed.
+numpy==2.5.3
+pandas==3.0.6
+pyarrow==25.0.1
+scikit-learn==1.9.1
+lightgbm==4.7.0
+fastapi==0.142.2
+uvicorn==0.54.0
+requests==2.34.2
+httpx==0.28.1
+pytest==9.1.1

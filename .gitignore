@@ -24,3 +24,6 @@ frontend/dist/
 # Artifacts
 *.parquet
 *.pkl
+*.tsbuildinfo
+.pytest_cache/
+logs/

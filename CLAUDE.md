@@ -1,5 +1,21 @@
 Read context/claude.md for project context and reference reading.
 
+## Current implementation checkpoint
+
+The runnable research prototype is documented in README.md. It uses `src/research.py`
+for the causal seed workflow and bounded policy search, and `src/real_pilot.py` for
+whole-well held-out 3W evaluation. The dashboard consumes measured API results.
+The default Live agent page uses `src/live_agent.py` and `backend/live.py` for
+incremental sensor processing, actual conditional tool calls, pause/step/stop,
+future-input fault injection, live 24-candidate validation and frozen final testing.
+Its controller is deterministic; no LLM is configured. Historical labels reach
+the evaluator only after each decision. Sessions are in memory; JSON exports
+preserve the complete event journal. Recorded replays remain a separate page.
+The architecture below remains the broader project plan: physics, dosing,
+forecasting, LLM/RAG and voice stubs are not claims about implemented behavior.
+Research-round IDs in the UI describe the seed ablations, not the proposed
+physics/ML system IDs below. Do not replace measured results with mock fixtures.
+
 ---
 
 # Frostline — Project Bible
