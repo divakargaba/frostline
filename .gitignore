@@ -1,0 +1,23 @@
+# Data & models (keep .gitkeep files)
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+models/*
+!models/.gitkeep
+
+# Environment
+.env
+__pycache__/
+.venv/
+
+# Frontend
+node_modules/
+frontend/dist/
+
+# OS
+.DS_Store
+
+# Artifacts
+*.parquet
+*.pkl
