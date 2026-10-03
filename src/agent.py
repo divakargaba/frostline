@@ -1,18 +1,24 @@
-"""LLM tool-calling agent loop.
+"""LLM tool-calling agent loop — two-round design.
 
 Owner: Div
 
-Orchestrates the hydrate-detection reasoning loop:
-  1. Receives a trigger from the watcher
-  2. Calls tools (max 8 calls) to gather evidence
-  3. Produces a structured decision: ALERT / WATCH / DISMISS
-  4. Caches decisions by (instance_id, minute_index, model) to avoid redundant calls
+Two-round agent (cuts LLM requests from ~7 to 2):
+  Round 0: Code pre-runs get_window + classify_event (always needed).
+  Round 1: LLM sees pre-run results, requests ALL additional tools in ONE
+           parallel batch. Tools executed locally.
+  Round 2: Results sent back; LLM returns structured decision.
+  Optional Round 3: only if LLM explicitly needs more, within budget.
+
+Budget: LLM_MAX_REQUESTS_PER_RUN (default 3). Retries count.
+Cache: by (instance_id, minute_index, model, PROMPT_VERSION).
+Fallback: rule_fallback when pool exhausted or budget exceeded.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -25,8 +31,9 @@ from src.tools import AgentContext, TOOL_SCHEMAS, dispatch_tool
 log = logging.getLogger("frostline.agent")
 
 CACHE_DIR = Path("data/cache/agent")
+PROMPT_VERSION = "v2"  # Bump when system prompt changes materially
 MAX_TOOL_CALLS = 8
-TOTAL_TIMEOUT_S = 60
+LLM_MAX_REQUESTS_PER_RUN = int(os.getenv("LLM_MAX_REQUESTS_PER_RUN", "3"))
 
 SYSTEM_PROMPT = """You are an offshore production advisor watching for hydrate formation in a subsea oil well. You have access to tools that provide real sensor data, physics calculations, ML predictions, and operational playbooks.
 
@@ -42,6 +49,10 @@ RULES:
 4. If a sensor is missing, say so and lean on other available evidence.
 5. Distinguish hydrate from look-alikes: hydrate shows BOTH pressure drop AND temperature drop toward equilibrium. Scaling shows pressure drop but temperature stays normal.
 6. Keep the brief to 2-3 sentences, readable aloud by an operator.
+7. Before making ALERT or DISMISS, request search_playbook to cite a relevant procedure.
+8. Request ALL additional tools you need in a SINGLE response using parallel tool calls.
+
+You have already been given results from get_window and classify_event (pre-run by the system). If you need more evidence, request tools NOW in one batch. Otherwise, provide your decision.
 
 After gathering evidence, respond with ONLY a JSON object (no markdown, no explanation outside the JSON):
 {
@@ -53,13 +64,13 @@ After gathering evidence, respond with ONLY a JSON object (no markdown, no expla
   "dose_wt_pct": number_or_null,
   "dose_in_range": boolean_or_null,
   "evidence": [{"tool": "tool_name", "summary": "one line"}],
-  "playbook_refs": ["filename.md"],
+  "playbook_refs": ["doc_id"],
   "brief": "2-3 sentence operator brief"
 }"""
 
 
 def _cache_key(instance_id: str, minute_index: int, model: str) -> str:
-    raw = f"{instance_id}:{minute_index}:{model}"
+    raw = f"{instance_id}:{minute_index}:{model}:{PROMPT_VERSION}"
     return hashlib.md5(raw.encode()).hexdigest()
 
 
@@ -109,6 +120,7 @@ def _build_rule_fallback(ctx: AgentContext, tool_results: dict[str, dict]) -> di
     margin = tool_results.get("hydrate_margin", {})
     forecast = tool_results.get("forecast_onset", {})
     dose = tool_results.get("methanol_dose", {})
+    playbook = tool_results.get("search_playbook", {})
 
     p_h = classify.get("p_hydrate", 0)
     p_l = classify.get("p_lookalike", 0)
@@ -149,6 +161,13 @@ def _build_rule_fallback(ctx: AgentContext, tool_results: dict[str, dict]) -> di
     if forecast.get("available"):
         evidence.append({"tool": "forecast_onset", "summary": f"p50={onset.get('p50')} min"})
 
+    # Playbook refs from search results
+    playbook_refs = []
+    if playbook.get("available"):
+        for r in playbook.get("results", []):
+            if r.get("id"):
+                playbook_refs.append(r["id"])
+
     return {
         "decision": decision,
         "recheck_min": 15 if decision == "WATCH" else None,
@@ -158,14 +177,13 @@ def _build_rule_fallback(ctx: AgentContext, tool_results: dict[str, dict]) -> di
         "dose_wt_pct": dose_result.get("dose_wt_pct"),
         "dose_in_range": dose_result.get("in_range"),
         "evidence": evidence,
-        "playbook_refs": [],
+        "playbook_refs": playbook_refs,
         "brief": " ".join(brief_parts) if brief_parts else "Insufficient data for assessment.",
         "source": "rule_fallback",
     }
 
 
 def _extract_numbers(text: str) -> set[float]:
-    """Extract all numbers from a string."""
     nums = set()
     for m in re.finditer(r'-?\d+\.?\d*', text):
         try:
@@ -176,14 +194,11 @@ def _extract_numbers(text: str) -> set[float]:
 
 
 def _check_traceability(decision: dict, tool_results: dict[str, dict]) -> bool:
-    """Check that every number in brief/evidence comes from a tool result."""
-    # Collect all numbers from tool results
     tool_nums = set()
     for result in tool_results.values():
         for v in result.values():
             if isinstance(v, (int, float)) and not isinstance(v, bool):
                 tool_nums.add(float(v))
-                # Also add common roundings
                 tool_nums.add(round(float(v), 1))
                 tool_nums.add(round(float(v), 0))
             elif isinstance(v, dict):
@@ -191,10 +206,14 @@ def _check_traceability(decision: dict, tool_results: dict[str, dict]) -> bool:
                     if isinstance(vv, (int, float)) and not isinstance(vv, bool):
                         tool_nums.add(float(vv))
                         tool_nums.add(round(float(vv), 1))
+            elif isinstance(v, list):
+                for item in v:
+                    if isinstance(item, dict):
+                        for vv in item.values():
+                            if isinstance(vv, (int, float)) and not isinstance(vv, bool):
+                                tool_nums.add(float(vv))
 
-    # Check numbers in brief
     brief_nums = _extract_numbers(decision.get("brief", ""))
-    # Allow common constants (0, 1, 2, 3, etc.) and percentages
     brief_nums -= {0.0, 1.0, 2.0, 3.0, 100.0}
 
     untraceable = brief_nums - tool_nums
@@ -204,21 +223,45 @@ def _check_traceability(decision: dict, tool_results: dict[str, dict]) -> bool:
     return True
 
 
-def run_agent(ctx: AgentContext, trigger: dict) -> Generator[dict, None, None]:
-    """Run the agent loop. Yields tool_call, tool_result, and decision events.
+def run_agent(ctx: AgentContext, trigger: dict,
+              cache_only: bool = False) -> Generator[dict, None, None]:
+    """Run the two-round agent loop. Yields tool_call, tool_result, decision events.
 
-    Args:
-        ctx: AgentContext with instance data up to current minute
-        trigger: The watch_trigger that started this investigation
+    If cache_only=True, only use cache or rule_fallback — never call the LLM.
     """
     client = get_llm_client()
     model_name = getattr(client, "model", "mock")
 
-    # Check cache
+    # Check cache first
     cached = _load_cache(ctx.instance_id, ctx.minute_index, model_name)
     if cached:
         log.info("Cache hit for %s minute %d", ctx.instance_id, ctx.minute_index)
         yield from cached
+        return
+
+    if cache_only:
+        # No cache, no LLM — use rule fallback with pre-run tools
+        tool_results = {}
+        t = trigger.get("t", "")
+        events: list[dict] = []
+
+        for tool_name in ("get_window", "classify_event"):
+            result = dispatch_tool(tool_name, ctx, {})
+            tool_results[tool_name] = result
+            tc_evt = {"type": "tool_call", "data": {"t": t, "call_id": f"sys_{tool_name}", "tool": tool_name, "args": {}, "requested_by": "system"}}
+            tr_evt = {"type": "tool_result", "data": {"t": t, "call_id": f"sys_{tool_name}", "tool": tool_name, "result": result, "requested_by": "system"}}
+            events.extend([tc_evt, tr_evt])
+            yield tc_evt
+            yield tr_evt
+
+        fallback = _build_rule_fallback(ctx, tool_results)
+        fallback["_tokens"] = 0
+        fallback["_cost"] = 0.0
+        fallback["_requests"] = 0
+        evt = {"type": "decision", "data": fallback}
+        events.append(evt)
+        yield evt
+        _save_cache(ctx.instance_id, ctx.minute_index, model_name, events)
         return
 
     t = trigger.get("t", "")
@@ -226,43 +269,88 @@ def run_agent(ctx: AgentContext, trigger: dict) -> Generator[dict, None, None]:
     tool_results: dict[str, dict] = {}
     total_tokens = 0
     total_cost = 0.0
+    n_requests = 0
+    max_requests = LLM_MAX_REQUESTS_PER_RUN
+    n_tool_calls = 0
 
+    # --- Round 0: Pre-run get_window and classify_event ---
+    pre_run_tools = ["get_window", "classify_event"]
+    pre_run_summary = []
+
+    for tool_name in pre_run_tools:
+        result = dispatch_tool(tool_name, ctx, {} if tool_name != "get_window" else {"minutes": 60})
+        tool_results[tool_name] = result
+        n_tool_calls += 1
+
+        tc_evt = {
+            "type": "tool_call",
+            "data": {"t": t, "call_id": f"sys_{tool_name}", "tool": tool_name,
+                     "args": {"minutes": 60} if tool_name == "get_window" else {},
+                     "requested_by": "system"},
+        }
+        tr_evt = {
+            "type": "tool_result",
+            "data": {"t": t, "call_id": f"sys_{tool_name}", "tool": tool_name,
+                     "result": result, "requested_by": "system"},
+        }
+        events.extend([tc_evt, tr_evt])
+        yield tc_evt
+        yield tr_evt
+
+        pre_run_summary.append(f"[{tool_name}] {json.dumps(result)}")
+
+    # --- Round 1: Send pre-run results to LLM, ask for additional tools ---
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": (
             f"A watcher trigger fired for well {ctx.well_id} at {t}. "
             f"Reason: {trigger.get('reason', 'unknown')}. "
-            f"Score: {trigger.get('score', 0)}. "
-            f"Investigate using the available tools and provide your decision."
+            f"Score: {trigger.get('score', 0)}.\n\n"
+            f"Pre-run tool results (already executed by the system):\n"
+            + "\n".join(pre_run_summary) + "\n\n"
+            f"If you need more tools, request them ALL now in one response (parallel tool calls). "
+            f"Otherwise, provide your final JSON decision."
         )},
     ]
 
     start = time.time()
-    n_calls = 0
 
-    for attempt in range(MAX_TOOL_CALLS + 2):  # Extra iterations for final answer
-        if time.time() - start > TOTAL_TIMEOUT_S:
+    for round_num in range(max_requests):
+        if time.time() - start > 60:
             log.warning("Agent timeout after %.1fs", time.time() - start)
+            break
+
+        if n_requests >= max_requests:
+            log.warning("Budget exhausted (%d requests)", n_requests)
             break
 
         try:
             resp = client.chat(messages, tools=TOOL_SCHEMAS, temperature=0, max_tokens=2048)
+            n_requests += 1
         except Exception as e:
             log.error("LLM call failed: %s", e)
-            # Try fallback models
-            resp = _try_fallback_models(messages, TOOL_SCHEMAS)
-            if resp is None:
-                break
+            n_requests += 1
+            break
+
+        # Check for pool exhaustion
+        if resp.model == "exhausted":
+            log.warning("Model pool exhausted")
+            break
 
         total_tokens += resp.usage.get("total_tokens", 0)
         total_cost += resp.cost_estimate
 
         if not resp.tool_calls:
             # Final answer — try to parse as decision JSON
-            decision = _parse_decision(resp.content, ctx, tool_results, messages, client)
+            decision = _parse_decision(resp.content, ctx, tool_results, messages, client,
+                                       n_requests, max_requests)
             if decision:
+                if decision and n_requests < max_requests:
+                    n_requests += decision.pop("_extra_requests", 0)
                 decision["_tokens"] = total_tokens
                 decision["_cost"] = round(total_cost, 6)
+                decision["_requests"] = n_requests
+                decision["_model"] = resp.model
                 evt = {"type": "decision", "data": decision}
                 events.append(evt)
                 yield evt
@@ -270,60 +358,59 @@ def run_agent(ctx: AgentContext, trigger: dict) -> Generator[dict, None, None]:
                 return
             break
 
-        # Process tool calls
+        # Process ALL tool calls from this response (parallel batch)
+        assistant_tool_calls = []
         for tc in resp.tool_calls:
-            if n_calls >= MAX_TOOL_CALLS:
+            if n_tool_calls >= MAX_TOOL_CALLS:
                 log.warning("Max tool calls reached (%d)", MAX_TOOL_CALLS)
                 break
-            n_calls += 1
+            n_tool_calls += 1
 
-            # Emit tool_call event
             tc_evt = {
                 "type": "tool_call",
-                "data": {"t": t, "call_id": tc.id, "tool": tc.name, "args": tc.arguments},
+                "data": {"t": t, "call_id": tc.id, "tool": tc.name,
+                         "args": tc.arguments, "requested_by": "agent"},
             }
             events.append(tc_evt)
             yield tc_evt
 
-            # Execute tool
             result = dispatch_tool(tc.name, ctx, tc.arguments)
             tool_results[tc.name] = result
 
-            # Emit tool_result event
             tr_evt = {
                 "type": "tool_result",
-                "data": {"t": t, "call_id": tc.id, "tool": tc.name, "result": result},
+                "data": {"t": t, "call_id": tc.id, "tool": tc.name,
+                         "result": result, "requested_by": "agent"},
             }
             events.append(tr_evt)
             yield tr_evt
 
-            # Add to messages for next LLM call
-            messages.append({
-                "role": "assistant",
-                "content": resp.content,
-                "tool_calls": [
-                    {"id": tc.id, "type": "function",
-                     "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)}}
-                ],
-            })
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc.id,
-                "content": json.dumps(result),
+            assistant_tool_calls.append({
+                "id": tc.id, "type": "function",
+                "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)}
             })
 
-        if n_calls >= MAX_TOOL_CALLS:
-            # Force a final answer
-            messages.append({
-                "role": "user",
-                "content": "You have used all available tool calls. Please provide your final decision now as a JSON object.",
-            })
+        # Add all tool calls + results to messages
+        messages.append({
+            "role": "assistant",
+            "content": resp.content,
+            "tool_calls": assistant_tool_calls,
+        })
+        for tc in resp.tool_calls:
+            if tc.name in tool_results:
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc.id,
+                    "content": json.dumps(tool_results[tc.name]),
+                })
 
     # If we got here without a decision, use rule fallback
     log.warning("Agent loop ended without LLM decision, using rule fallback")
     fallback = _build_rule_fallback(ctx, tool_results)
     fallback["_tokens"] = total_tokens
     fallback["_cost"] = round(total_cost, 6)
+    fallback["_requests"] = n_requests
+    fallback["_model"] = getattr(client, "model", "mock")
     evt = {"type": "decision", "data": fallback}
     events.append(evt)
     yield evt
@@ -331,18 +418,26 @@ def run_agent(ctx: AgentContext, trigger: dict) -> Generator[dict, None, None]:
 
 
 def _parse_decision(content: str | None, ctx: AgentContext,
-                    tool_results: dict, messages: list, client) -> dict | None:
+                    tool_results: dict, messages: list, client,
+                    n_requests: int, max_requests: int) -> dict | None:
     """Parse LLM response as decision JSON. Retry once on failure."""
     if not content:
         return None
 
+    extra_requests = 0
     for attempt in range(2):
         try:
-            # Strip markdown code fences if present
             text = content.strip()
             if text.startswith("```"):
                 text = re.sub(r'^```\w*\n?', '', text)
                 text = re.sub(r'\n?```$', '', text)
+
+            # Try to find JSON in the response
+            if not text.startswith("{"):
+                match = re.search(r'\{[\s\S]*\}', text)
+                if match:
+                    text = match.group()
+
             d = json.loads(text)
 
             # Validate with Pydantic
@@ -362,23 +457,25 @@ def _parse_decision(content: str | None, ctx: AgentContext,
 
             result = d.copy()
 
-            # Traceability check
-            if not _check_traceability(result, tool_results) and attempt == 0:
+            # Traceability check — retry once if budget allows
+            if not _check_traceability(result, tool_results) and attempt == 0 and (n_requests + extra_requests) < max_requests:
                 messages.append({"role": "user", "content": (
                     "Your brief contains numbers that don't match any tool result. "
                     "Please revise: every number in the brief must come directly from a tool result."
                 )})
                 try:
                     resp = client.chat(messages, tools=TOOL_SCHEMAS, temperature=0, max_tokens=2048)
+                    extra_requests += 1
                     content = resp.content
                     continue
                 except Exception:
                     pass
 
+            result["_extra_requests"] = extra_requests
             return result
 
         except (json.JSONDecodeError, KeyError, Exception) as e:
-            if attempt == 0:
+            if attempt == 0 and (n_requests + extra_requests) < max_requests:
                 log.warning("Decision parse failed (attempt %d): %s", attempt + 1, e)
                 messages.append({"role": "user", "content": (
                     f"Your response was not valid JSON or was missing required fields. Error: {e}. "
@@ -386,6 +483,7 @@ def _parse_decision(content: str | None, ctx: AgentContext,
                 )})
                 try:
                     resp = client.chat(messages, tools=TOOL_SCHEMAS, temperature=0, max_tokens=2048)
+                    extra_requests += 1
                     content = resp.content
                 except Exception:
                     return None
@@ -396,70 +494,48 @@ def _parse_decision(content: str | None, ctx: AgentContext,
     return None
 
 
-def _try_fallback_models(messages: list, tools: list) -> LLMResponse | None:
-    """Try fallback models from OPENROUTER_FALLBACK_MODELS env var."""
-    import os
-    from src.llm import OpenRouterClient
-    from backend.config import OPENROUTER_API_KEY
-
-    fallbacks = os.getenv("OPENROUTER_FALLBACK_MODELS", "")
-    if not fallbacks or not OPENROUTER_API_KEY:
-        return None
-
-    for model in fallbacks.split(","):
-        model = model.strip()
-        if not model:
-            continue
-        try:
-            log.info("Trying fallback model: %s", model)
-            client = OpenRouterClient(OPENROUTER_API_KEY, model)
-            return client.chat(messages, tools=tools, temperature=0, max_tokens=2048)
-        except Exception as e:
-            log.warning("Fallback model %s failed: %s", model, e)
-
-    return None
-
-
 # ---------------------------------------------------------------------------
 # Mock LLM scenarios for development
 # ---------------------------------------------------------------------------
 
 def _mock_hydrate_scenario() -> list[LLMResponse]:
-    """Scripted responses for hydrate ALERT path."""
+    """Scripted responses for hydrate ALERT path.
+
+    Round 1: LLM requests additional tools (parallel batch).
+    Round 2: LLM returns decision JSON.
+    """
     return [
-        # Call 1: model calls get_window
+        # Round 1: LLM requests additional tools in parallel
         LLMResponse(
             content=None,
-            tool_calls=[ToolCall(id="c1", name="get_window", arguments={"minutes": 60})],
-            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            tool_calls=[
+                ToolCall(id="c1", name="hydrate_margin", arguments={}),
+                ToolCall(id="c2", name="forecast_onset", arguments={}),
+                ToolCall(id="c3", name="search_playbook", arguments={"query": "hydrate alert response"}),
+            ],
+            usage={"prompt_tokens": 500, "completion_tokens": 50, "total_tokens": 550},
             model="mock",
         ),
-        # Call 2: model calls classify_event
+        # Round 2: LLM returns ALERT decision
         LLMResponse(
-            content=None,
-            tool_calls=[ToolCall(id="c2", name="classify_event", arguments={})],
-            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-            model="mock",
-        ),
-        # Call 3: model calls hydrate_margin
-        LLMResponse(
-            content=None,
-            tool_calls=[ToolCall(id="c3", name="hydrate_margin", arguments={})],
-            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-            model="mock",
-        ),
-        # Call 4: model calls forecast_onset
-        LLMResponse(
-            content=None,
-            tool_calls=[ToolCall(id="c4", name="forecast_onset", arguments={})],
-            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-            model="mock",
-        ),
-        # Call 5: model calls methanol_dose
-        LLMResponse(
-            content=None,
-            tool_calls=[ToolCall(id="c5", name="methanol_dose", arguments={"target_shift_C": 5.0})],
-            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            content=json.dumps({
+                "decision": "ALERT",
+                "recheck_min": None,
+                "confidence": 0.82,
+                "diagnosis": "hydrate_production_line",
+                "onset_eta": {"p10": None, "p50": None, "p90": None},
+                "dose_wt_pct": None,
+                "dose_in_range": None,
+                "evidence": [
+                    {"tool": "classify_event", "summary": "Heuristic: 65% hydrate probability"},
+                    {"tool": "get_window", "summary": "Pressure and temperature declining"},
+                    {"tool": "search_playbook", "summary": "Hydrate response checklist recommends inhibitor injection"},
+                ],
+                "playbook_refs": ["hydrate_response"],
+                "brief": "Pressure and temperature both declining. Heuristic classifier gives 65% hydrate probability. Recommend immediate inhibitor injection per hydrate response checklist.",
+            }),
+            tool_calls=[],
+            usage={"prompt_tokens": 800, "completion_tokens": 200, "total_tokens": 1000},
             model="mock",
         ),
     ]
@@ -468,34 +544,42 @@ def _mock_hydrate_scenario() -> list[LLMResponse]:
 def _mock_scaling_scenario() -> list[LLMResponse]:
     """Scripted responses for scaling DISMISS path."""
     return [
+        # Round 1: LLM requests search_playbook
         LLMResponse(
             content=None,
-            tool_calls=[ToolCall(id="c1", name="get_window", arguments={"minutes": 60})],
-            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            tool_calls=[
+                ToolCall(id="c1", name="search_playbook", arguments={"query": "scaling vs hydrate"}),
+            ],
+            usage={"prompt_tokens": 500, "completion_tokens": 30, "total_tokens": 530},
             model="mock",
         ),
+        # Round 2: LLM returns DISMISS decision
         LLMResponse(
-            content=None,
-            tool_calls=[ToolCall(id="c2", name="classify_event", arguments={})],
-            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-            model="mock",
-        ),
-        LLMResponse(
-            content=None,
-            tool_calls=[ToolCall(id="c3", name="hydrate_margin", arguments={})],
-            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            content=json.dumps({
+                "decision": "DISMISS",
+                "recheck_min": None,
+                "confidence": 0.78,
+                "diagnosis": "scaling",
+                "onset_eta": {"p10": None, "p50": None, "p90": None},
+                "dose_wt_pct": None,
+                "dose_in_range": None,
+                "evidence": [
+                    {"tool": "classify_event", "summary": "Heuristic: 5% hydrate, 10% look-alike"},
+                    {"tool": "get_window", "summary": "No significant pressure or temperature drop"},
+                    {"tool": "search_playbook", "summary": "Scaling shows pressure drop without temperature shift"},
+                ],
+                "playbook_refs": ["scaling_vs_hydrate"],
+                "brief": "No significant pressure or temperature drop detected. Heuristic classifier gives only 5% hydrate probability. This appears to be normal operation.",
+            }),
+            tool_calls=[],
+            usage={"prompt_tokens": 800, "completion_tokens": 200, "total_tokens": 1000},
             model="mock",
         ),
     ]
 
 
 def get_mock_client_for_scenario(scenario: str = "hydrate") -> MockLLMClient:
-    """Get a MockLLMClient pre-loaded with a scenario's tool calls.
-
-    The final answer (decision JSON) is appended as the last planned response.
-    The decision is built from whatever the tools actually return, so it adapts
-    to the data.
-    """
+    """Get a MockLLMClient pre-loaded with a scenario's responses."""
     if scenario == "hydrate":
         planned = _mock_hydrate_scenario()
     else:

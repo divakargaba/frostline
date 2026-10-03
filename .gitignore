@@ -5,7 +5,6 @@ data/processed/*
 !data/processed/.gitkeep
 data/cache/
 data/state/
-data/demo/
 models/*
 !models/.gitkeep
 

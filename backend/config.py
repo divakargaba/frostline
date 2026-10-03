@@ -24,6 +24,7 @@ FRONTEND_MOCKS = ROOT / "frontend" / "mocks"
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "")
 LLM_MODE = os.getenv("LLM_MODE", "")  # "mock" forces mock
+LLM_MAX_REQUESTS_PER_RUN = int(os.getenv("LLM_MAX_REQUESTS_PER_RUN", "3"))
 
 # --- CORS ---
 CORS_ORIGINS = [

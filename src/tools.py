@@ -28,7 +28,7 @@ DEFAULT_THRESHOLDS = {
     "watch_threshold": 0.5,
     "margin_warn_band_C": 3.0,
     "pressure_drop_bar_30min": 5.0,
-    "cooldown_min": 30,
+    "cooldown_min": 60,
     "recheck_default_min": 15,
 }
 

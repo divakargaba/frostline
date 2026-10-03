@@ -76,17 +76,20 @@ def _llm_mode() -> str:
 
 
 @app.get("/health")
-async def health() -> HealthResponse:
-    return HealthResponse(
-        status="ok",
-        has_processed=DATA_PROCESSED.exists() and (DATA_PROCESSED / "index.csv").exists(),
-        has_raw=DATA_RAW_3W.exists(),
-        has_seed=(DATA_SEED / "well_hydrate_seed.csv").exists(),
-        has_physics=_has_physics(),
-        has_model=_has_model(),
-        llm_mode=_llm_mode(),
-        llm_model=OPENROUTER_MODEL if _llm_mode() == "openrouter" else "mock",
-    )
+async def health():
+    from src.llm import get_usage_tracker
+    usage = get_usage_tracker().summary()
+    return {
+        "status": "ok",
+        "has_processed": DATA_PROCESSED.exists() and (DATA_PROCESSED / "index.csv").exists(),
+        "has_raw": DATA_RAW_3W.exists(),
+        "has_seed": (DATA_SEED / "well_hydrate_seed.csv").exists(),
+        "has_physics": _has_physics(),
+        "has_model": _has_model(),
+        "llm_mode": _llm_mode(),
+        "llm_model": OPENROUTER_MODEL if _llm_mode() == "openrouter" else "mock",
+        "llm_usage": usage,
+    }
 
 
 @app.get("/wells")
@@ -106,6 +109,7 @@ async def stream_well(
     record: bool = Query(default=False),
     agent: bool = Query(default=True),
     pause_on_agent: bool = Query(default=True),
+    cache_only: bool = Query(default=False),
 ):
     """SSE stream of tick/phase_marker/end events for a well instance."""
 
@@ -135,12 +139,13 @@ async def stream_well(
 
     return EventSourceResponse(
         _stream_live(request, inst, speed, from_minute, end, recording_path,
-                     agent_enabled=agent, pause_on_agent=pause_on_agent)
+                     agent_enabled=agent, pause_on_agent=pause_on_agent,
+                     cache_only=cache_only)
     )
 
 
 async def _stream_live(request, inst, speed, from_min, to_min, recording_path,
-                       agent_enabled=True, pause_on_agent=True):
+                       agent_enabled=True, pause_on_agent=True, cache_only=False):
     """Generate SSE events from replay instance, with watcher + agent."""
     from src.watcher import Watcher
     from src.tools import AgentContext
@@ -224,7 +229,7 @@ async def _stream_live(request, inst, speed, from_min, to_min, recording_path,
                         from src.agent import run_agent
                         agent_events = await loop.run_in_executor(
                             _executor,
-                            lambda: list(run_agent(ctx, trigger))
+                            lambda: list(run_agent(ctx, trigger, cache_only=cache_only))
                         )
 
                         for ae in agent_events:

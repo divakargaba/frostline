@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -31,6 +32,8 @@ class WatcherState:
     recheck_at_minute: int | None = None
     # Consecutive high-score minutes
     consecutive_high: int = 0
+    # Pressure history for fallback (last 30 readings)
+    pressure_history: deque = field(default_factory=lambda: deque(maxlen=30))
 
     thresholds: dict = field(default_factory=load_thresholds)
 
@@ -60,7 +63,7 @@ class Watcher:
         Trigger conditions (any one is sufficient):
         1. p_hydrate >= watch_threshold for 3+ consecutive minutes
         2. margin_C within warn band AND declining (slope negative)
-        3. Fallback rule: pressure dropped > threshold over 30 min
+        3. Fallback rule: pressure dropped > threshold over 30 min window
 
         Suppressed during cooldown unless score jumps significantly.
         """
@@ -68,6 +71,12 @@ class Watcher:
         t = tick.get("t", "")
         th = st.thresholds
         cooldown = th.get("cooldown_min", DEFAULT_THRESHOLDS["cooldown_min"])
+
+        # Track pressure for fallback
+        sensors = tick.get("sensors", {})
+        p_tpt = sensors.get("P_TPT_bar") or sensors.get("P-TPT")
+        if p_tpt is not None and isinstance(p_tpt, (int, float)):
+            st.pressure_history.append(p_tpt)
 
         # Check if we're in recheck mode
         is_recheck = (st.recheck_at_minute is not None and minute_index >= st.recheck_at_minute)
@@ -108,15 +117,15 @@ class Watcher:
 
         # --- Condition 3: Pressure drop fallback (no model, no physics) ---
         if p_hydrate is None and margin is None:
-            sensors = tick.get("sensors", {})
-            p_tpt = sensors.get("P_TPT_bar") or sensors.get("P-TPT")
-            if p_tpt is not None:
-                # Use a simple threshold — this is a fallback
-                drop_th = th.get("pressure_drop_bar_30min", DEFAULT_THRESHOLDS["pressure_drop_bar_30min"])
-                # We'd need historical data; for per-tick fallback, flag low pressure
-                if isinstance(p_tpt, (int, float)) and p_tpt < 260:
+            drop_th = th.get("pressure_drop_bar_30min", DEFAULT_THRESHOLDS["pressure_drop_bar_30min"])
+            if len(st.pressure_history) >= 10:
+                # Detect a sustained pressure DROP over the window
+                p_start = st.pressure_history[0]
+                p_end = st.pressure_history[-1]
+                p_drop = p_start - p_end  # positive = pressure fell
+                if p_drop >= drop_th:
                     score = max(score, 0.5)
-                    reason = reason or f"Pressure fallback: P_TPT={p_tpt:.1f} bar below threshold"
+                    reason = reason or f"Pressure fallback: P_TPT dropped {p_drop:.1f} bar over {len(st.pressure_history)} min"
 
         # --- Recheck trigger ---
         if is_recheck and score < 0.3:
