@@ -1,0 +1,10 @@
+{
+  "systems": [
+    {"name": "B0", "description": "Always normal", "caught": 0, "missed": 14, "false_alarms_per_day": 0.0, "mean_lead_time_min": null, "misdiagnosis_rate": 0.0},
+    {"name": "B1", "description": "5th-pctl pressure cutoff", "caught": 8, "missed": 6, "false_alarms_per_day": 1.5, "mean_lead_time_min": 90.0, "misdiagnosis_rate": 0.0},
+    {"name": "B2", "description": "Physics-only (margin > 0)", "caught": 10, "missed": 4, "false_alarms_per_day": 0.8, "mean_lead_time_min": 110.0, "misdiagnosis_rate": 0.0},
+    {"name": "M1", "description": "ML only", "caught": 12, "missed": 2, "false_alarms_per_day": 1.2, "mean_lead_time_min": 150.0, "misdiagnosis_rate": 0.07},
+    {"name": "M2", "description": "ML + physics", "caught": 13, "missed": 1, "false_alarms_per_day": 0.6, "mean_lead_time_min": 180.0, "misdiagnosis_rate": 0.04},
+    {"name": "M3", "description": "Agent + retuned thresholds", "caught": 14, "missed": 0, "false_alarms_per_day": 0.3, "mean_lead_time_min": 200.0, "misdiagnosis_rate": 0.02}
+  ]
+}

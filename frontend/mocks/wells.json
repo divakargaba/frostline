@@ -1,0 +1,16 @@
+[
+  {
+    "well_id": "WELL-00019",
+    "instance_id": "WELL-00019_20240107",
+    "source": "real",
+    "sensors_available": ["P-PDG", "T-PDG", "P-TPT", "T-TPT", "P-MON-CKP", "QGL"],
+    "has_hydrate_event": true
+  },
+  {
+    "well_id": "WELL-00025",
+    "instance_id": "WELL-00025_20240110",
+    "source": "real",
+    "sensors_available": ["P-PDG", "T-PDG", "P-TPT", "P-MON-CKP", "QGL"],
+    "has_hydrate_event": false
+  }
+]

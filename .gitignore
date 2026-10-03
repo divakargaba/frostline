@@ -6,6 +6,9 @@ data/processed/*
 models/*
 !models/.gitkeep
 
+# Seed data is committed (small CSV for pipeline development)
+!data/seed/
+
 # Environment
 .env
 __pycache__/
