@@ -134,3 +134,134 @@ class ResultsResponse(BaseModel):
 
 class TTSRequest(BaseModel):
     text: str
+
+
+# --- Fleet models ---
+
+
+class FleetSessionCreate(BaseModel):
+    speed: int = 60
+    agent: bool = True
+    mode: str = "live"  # "live" | "cached" | "cache_only"
+    record: bool = False
+
+
+class FleetSessionResponse(BaseModel):
+    session_id: str
+    n_wells: int
+    max_minutes: int
+    mode: str
+
+
+class FleetTickEvent(BaseModel):
+    session_id: str
+    well_id: str
+    display_id: str
+    replay_minute: int
+    original_t: str
+    sensors: dict[str, float | None]
+    margin_C: float | None = None
+    p_hydrate: float | None = None
+    p_lookalike: float | None = None
+    p_normal: float | None = None
+    quality: dict[str, str] | None = None
+
+
+class FleetPhaseMarkerEvent(BaseModel):
+    session_id: str
+    well_id: str
+    display_id: str
+    t: str
+    phase: str
+
+
+class FleetWatchTriggerEvent(BaseModel):
+    session_id: str
+    well_id: str
+    display_id: str
+    t: str
+    reason: str
+    score: float
+    incident_id: str
+
+
+class FleetToolCallEvent(BaseModel):
+    session_id: str
+    well_id: str
+    display_id: str
+    t: str
+    call_id: str
+    tool: str
+    args: dict
+    requested_by: str = "system"
+
+
+class FleetToolResultEvent(BaseModel):
+    session_id: str
+    well_id: str
+    display_id: str
+    t: str
+    call_id: str
+    tool: str
+    result: dict
+    requested_by: str = "system"
+
+
+class PriorityEntry(BaseModel):
+    well_id: str
+    display_id: str
+    category: str  # "review_now" | "investigate" | "watch" | "normal"
+    priority_rank: int
+    headline: str
+    score: float = 0.0
+    unacknowledged: bool = True
+    next_check_minute: int | None = None
+
+
+class FleetCounters(BaseModel):
+    needs_review: int = 0
+    unacknowledged: int = 0
+    reliable_feeds: int = 0
+    checks_due: int = 0
+
+
+class FleetAssessmentEvent(BaseModel):
+    session_id: str
+    well_id: str
+    display_id: str
+    incident_id: str
+    decision: str  # "ALERT" | "WATCH" | "DISMISS"
+    category: str  # "review_now" | "investigate" | "watch" | "normal"
+    confidence: float
+    diagnosis: str
+    brief: str
+    next_action: str = ""
+    next_check_minute: int | None = None
+    uncertainty: str = ""
+    evidence_refs: list[dict] = []
+    playbook_refs: list[str] = []
+    source: str = "agent"  # "agent" | "fallback"
+
+
+class FleetStatusEvent(BaseModel):
+    session_id: str
+    held: bool
+    reason: str = ""
+    current_minute: int
+    priority_list: list[PriorityEntry]
+    counters: FleetCounters
+
+
+class FleetEndEvent(BaseModel):
+    session_id: str
+    total_minutes: int
+    llm_attempts_used: int
+
+
+class AckRequest(BaseModel):
+    pass
+
+
+class AckResponse(BaseModel):
+    incident_id: str
+    acknowledged: bool

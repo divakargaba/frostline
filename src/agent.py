@@ -1,13 +1,13 @@
-"""LLM tool-calling agent loop — two-round design.
+"""LLM tool-calling agent loop — adaptive tool choice design.
 
 Owner: Div
 
-Two-round agent (cuts LLM requests from ~7 to 2):
+Adaptive agent (LLM chooses which tools to use):
   Round 0: Code pre-runs get_window + classify_event (always needed).
-  Round 1: LLM sees pre-run results, requests ALL additional tools in ONE
-           parallel batch. Tools executed locally.
-  Round 2: Results sent back; LLM returns structured decision.
-  Optional Round 3: only if LLM explicitly needs more, within budget.
+  Round 1: LLM sees pre-run results + trigger info, requests additional
+           tools it needs in ONE parallel batch (requested_by: "agent").
+  Round 2: LLM receives tool results, returns structured decision JSON.
+  Optional Round 3: only if LLM explicitly flags a concern, within budget.
 
 Budget: LLM_MAX_REQUESTS_PER_RUN (default 3). Retries count.
 Cache: by (instance_id, minute_index, model, PROMPT_VERSION).
@@ -52,7 +52,14 @@ RULES:
 7. Before making ALERT or DISMISS, request search_playbook to cite a relevant procedure.
 8. Request ALL additional tools you need in a SINGLE response using parallel tool calls.
 
-You have already been given results from get_window and classify_event (pre-run by the system). If you need more evidence, request tools NOW in one batch. Otherwise, provide your decision.
+You have already been given results from get_window and classify_event (pre-run by the system). Based on this initial evidence, decide which additional tools you need. Available tools:
+- hydrate_margin: Calculate subcooling margin (use when pressure/temperature suggest hydrate risk)
+- forecast_onset: Predict time to established hydrate (use when hydrate is likely)
+- methanol_dose: Calculate inhibitor dose (use when preparing ALERT recommendation)
+- well_history: Get past triggers and thresholds (use for context on repeat events)
+- search_playbook: Search operations playbook (use to cite procedures for ALERT or DISMISS)
+
+Request the tools you need NOW in one batch. After receiving results, provide your decision.
 
 After gathering evidence, respond with ONLY a JSON object (no markdown, no explanation outside the JSON):
 {
@@ -302,15 +309,11 @@ def run_agent(ctx: AgentContext, trigger: dict,
     max_requests = LLM_MAX_REQUESTS_PER_RUN
     n_tool_calls = 0
 
-    # --- Round 0: Pre-run ALL standard tools ---
-    # Pre-run everything the LLM typically needs so it can decide in 1 request.
+    # --- Round 0: Pre-run only get_window + classify_event ---
+    # These two are always needed. LLM chooses additional tools adaptively.
     pre_run_specs = [
         ("get_window", {"minutes": 60}),
         ("classify_event", {}),
-        ("hydrate_margin", {}),
-        ("forecast_onset", {}),
-        ("methanol_dose", {}),
-        ("search_playbook", {"query": _playbook_query(trigger)}),
     ]
     pre_run_summary = []
 
@@ -335,18 +338,17 @@ def run_agent(ctx: AgentContext, trigger: dict,
 
         pre_run_summary.append(f"[{tool_name}] {json.dumps(result)}")
 
-    # --- Round 1: Send all pre-run results to LLM for decision ---
+    # --- Round 1: LLM sees pre-run results + chooses additional tools ---
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": (
             f"A watcher trigger fired for well {ctx.well_id} at {t}. "
             f"Reason: {trigger.get('reason', 'unknown')}. "
             f"Score: {trigger.get('score', 0)}.\n\n"
-            f"All standard tools have been pre-run by the system:\n"
+            f"The following tools were pre-run by the system:\n"
             + "\n".join(pre_run_summary) + "\n\n"
-            f"Provide your final JSON decision based on the evidence above. "
-            f"If you absolutely need another tool not listed above, you may request it, "
-            f"but in most cases the evidence is sufficient."
+            f"Based on this initial evidence, request any additional tools you need "
+            f"in one batch, then provide your JSON decision."
         )},
     ]
 

@@ -1,0 +1,50 @@
+{
+  "description": "Historical fleet replay with 4 wells, illustrative locations in Campos Basin.",
+  "window_minutes": 180,
+  "wells": [
+    {
+      "display_id": "Alpha-1",
+      "instance_id": "WELL-00001_20170626190135",
+      "well_id": "WELL-00001",
+      "event_class": 0,
+      "event_label": "Normal operation",
+      "from_minute": 0,
+      "to_minute": 180,
+      "lat": -22.95,
+      "lon": -40.72
+    },
+    {
+      "display_id": "Bravo-2",
+      "instance_id": "WELL-00002_20140212160333",
+      "well_id": "WELL-00002",
+      "event_class": 6,
+      "event_label": "Quick restriction in PCK",
+      "from_minute": 190,
+      "to_minute": 370,
+      "lat": -23.10,
+      "lon": -40.85
+    },
+    {
+      "display_id": "Charlie-6",
+      "instance_id": "WELL-00006_20180618103000",
+      "well_id": "WELL-00006",
+      "event_class": 7,
+      "event_label": "Scaling in PCK",
+      "from_minute": 200,
+      "to_minute": 380,
+      "lat": -22.80,
+      "lon": -41.00
+    },
+    {
+      "display_id": "Delta-19",
+      "instance_id": "WELL-00019_20120601165020",
+      "well_id": "WELL-00019",
+      "event_class": 8,
+      "event_label": "Hydrate in production line",
+      "from_minute": 1685,
+      "to_minute": 1865,
+      "lat": -23.30,
+      "lon": -40.55
+    }
+  ]
+}

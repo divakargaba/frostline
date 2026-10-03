@@ -26,6 +26,10 @@ OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "")
 LLM_MODE = os.getenv("LLM_MODE", "")  # "mock" forces mock
 LLM_MAX_REQUESTS_PER_RUN = int(os.getenv("LLM_MAX_REQUESTS_PER_RUN", "3"))
 
+# --- Fleet ---
+FLEET_LLM_MAX = int(os.getenv("FLEET_LLM_MAX", "18"))
+FLEET_MANIFEST = ROOT / "data" / "demo" / "fleet.json"
+
 # --- CORS ---
 CORS_ORIGINS = [
     "http://localhost:5173",

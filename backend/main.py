@@ -32,6 +32,7 @@ from backend.replay import list_available_instances, load_demo_recording, load_i
 from backend.schemas import (
     EndEvent, ErrorEvent, HealthResponse, PhaseMarkerEvent, ResultsResponse,
     TickEvent, TTSRequest, WellInfo,
+    FleetSessionCreate, FleetSessionResponse, AckRequest, AckResponse,
 )
 
 log = logging.getLogger("frostline.api")
@@ -306,3 +307,119 @@ async def get_results() -> ResultsResponse:
 async def text_to_speech(req: TTSRequest):
     """TTS stub — the dashboard owner implements this."""
     raise HTTPException(501, "TTS not implemented — dashboard owner's task")
+
+
+# ---------------------------------------------------------------------------
+# Fleet endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/fleet/sessions")
+async def create_fleet_session(body: FleetSessionCreate):
+    """Create a new fleet replay session."""
+    from backend.fleet import create_session
+    try:
+        session = create_session(
+            speed=body.speed,
+            agent=body.agent,
+            mode=body.mode,
+            record=body.record,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+    return FleetSessionResponse(
+        session_id=session.session_id,
+        n_wells=len(session.wells),
+        max_minutes=session.max_minutes,
+        mode=session.mode,
+    )
+
+
+@app.post("/fleet/sessions/{session_id}/pause")
+async def pause_fleet_session(session_id: str):
+    from backend.fleet import get_session
+    session = get_session(session_id)
+    if session is None:
+        raise HTTPException(404, f"Session '{session_id}' not found")
+    session.paused = True
+    return {"session_id": session_id, "paused": True}
+
+
+@app.post("/fleet/sessions/{session_id}/resume")
+async def resume_fleet_session(session_id: str):
+    from backend.fleet import get_session
+    session = get_session(session_id)
+    if session is None:
+        raise HTTPException(404, f"Session '{session_id}' not found")
+    session.paused = False
+    return {"session_id": session_id, "paused": False}
+
+
+@app.get("/fleet/sessions/{session_id}/stream")
+async def stream_fleet_session(request: Request, session_id: str):
+    """SSE stream for a fleet session."""
+    from backend.fleet import get_session, run_fleet_stream, _make_status_event
+
+    session = get_session(session_id)
+    if session is None:
+        raise HTTPException(404, f"Session '{session_id}' not found")
+
+    queue: asyncio.Queue = asyncio.Queue(maxsize=500)
+    session.subscribers.append(queue)
+
+    # Start the replay loop if not already running
+    if session.current_minute == 0 and not session.finished:
+        asyncio.create_task(run_fleet_stream(session, queue))
+
+    async def _generate():
+        event_id = 0
+        try:
+            # Catch-up: send current status
+            status = _make_status_event(session)
+            event_id += 1
+            yield {
+                "event": "fleet_status",
+                "id": str(event_id),
+                "data": json.dumps(status.model_dump()),
+            }
+
+            while not session.finished:
+                if await request.is_disconnected():
+                    break
+                try:
+                    evt = await asyncio.wait_for(queue.get(), timeout=1.0)
+                    event_id += 1
+                    yield {
+                        "event": evt["type"],
+                        "id": str(event_id),
+                        "data": json.dumps(evt["data"]),
+                    }
+                except asyncio.TimeoutError:
+                    continue
+
+            # Drain remaining events
+            while not queue.empty():
+                evt = queue.get_nowait()
+                event_id += 1
+                yield {
+                    "event": evt["type"],
+                    "id": str(event_id),
+                    "data": json.dumps(evt["data"]),
+                }
+        finally:
+            if queue in session.subscribers:
+                session.subscribers.remove(queue)
+
+    return EventSourceResponse(_generate())
+
+
+@app.post("/fleet/sessions/{session_id}/incidents/{incident_id}/ack")
+async def ack_fleet_incident(session_id: str, incident_id: str):
+    from backend.fleet import get_session, acknowledge_incident
+    session = get_session(session_id)
+    if session is None:
+        raise HTTPException(404, f"Session '{session_id}' not found")
+    result = acknowledge_incident(session, incident_id)
+    if result is None:
+        raise HTTPException(404, f"Incident '{incident_id}' not found")
+    return result

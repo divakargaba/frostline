@@ -70,13 +70,73 @@ def _safe_call(fn, *args, **kwargs):
         return None
 
 
+TEMP_SENSORS = {"T-PDG", "T-TPT", "T-JUS-CKP"}
+CHOKE_SENSORS = {"ABER-CKP"}
+STUCK_WINDOW = 30  # minutes of identical values to flag as stuck
+
+
 class ReplayInstance:
     """Pre-enriched instance data, ready to iterate ticks."""
 
     def __init__(self, df: pd.DataFrame, metadata: dict):
         self.df = df
         self.metadata = metadata
+        self._check_quality()
         self._enrich()
+
+    def _check_quality(self):
+        """Flag and clean nonfinite, extreme, physically impossible, and stuck sensors."""
+        quality_rows: list[dict] = []
+
+        def _is_numeric(v):
+            return isinstance(v, (int, float, np.integer, np.floating))
+
+        for i in range(len(self.df)):
+            flags: dict[str, str] = {}
+            for s in STANDARD_SENSORS:
+                if s not in self.df.columns:
+                    continue
+                val = self.df.iloc[i][s]
+                if val is None:
+                    continue
+                if _is_numeric(val) and (np.isnan(float(val)) or np.isinf(float(val))):
+                    flags[s] = "nonfinite"
+                    self.df.iat[i, self.df.columns.get_loc(s)] = np.nan
+                elif _is_numeric(val) and abs(float(val)) >= 1e30:
+                    flags[s] = "extreme"
+                    self.df.iat[i, self.df.columns.get_loc(s)] = np.nan
+                elif s in TEMP_SENSORS and _is_numeric(val) and float(val) < -273.15:
+                    flags[s] = "below_absolute_zero"
+                    self.df.iat[i, self.df.columns.get_loc(s)] = np.nan
+                elif s in CHOKE_SENSORS and _is_numeric(val) and (float(val) < 0 or float(val) > 100):
+                    flags[s] = "choke_out_of_range"
+                    self.df.iat[i, self.df.columns.get_loc(s)] = np.nan
+            quality_rows.append(flags)
+
+        # Stuck sensor detection: unchanged for STUCK_WINDOW consecutive minutes
+        for s in STANDARD_SENSORS:
+            if s not in self.df.columns:
+                continue
+            vals = self.df[s].values
+            run_len = 0
+            run_val = None
+            for i in range(len(vals)):
+                v = vals[i]
+                if v is not None and not (isinstance(v, float) and np.isnan(v)):
+                    if run_val is not None and v == run_val:
+                        run_len += 1
+                    else:
+                        run_val = v
+                        run_len = 1
+                    if run_len >= STUCK_WINDOW:
+                        if s not in quality_rows[i]:
+                            quality_rows[i][s] = "stuck"
+                else:
+                    run_val = None
+                    run_len = 0
+
+        import json as _json
+        self.df["_quality"] = [_json.dumps(q) if q else "{}" for q in quality_rows]
 
     def _enrich(self):
         """Add margin_C, p_hydrate/lookalike/normal columns if possible."""
@@ -126,6 +186,15 @@ class ReplayInstance:
             "p_lookalike": _clean_value(row.get("p_lookalike")),
             "p_normal": _clean_value(row.get("p_normal")),
         }
+
+        # Include quality flags only for sensors with issues
+        import json as _json
+        quality_str = row.get("_quality", "{}")
+        if isinstance(quality_str, str) and quality_str != "{}":
+            quality = _json.loads(quality_str)
+            if quality:
+                result["quality"] = quality
+
         result.update(self.metadata)
         return result
 

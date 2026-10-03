@@ -320,6 +320,49 @@ def tool_well_history(ctx: AgentContext) -> dict:
     }
 
 
+def tool_check_sensor_quality(ctx: AgentContext) -> dict:
+    """Check data quality for all sensors at current minute."""
+    import json as _json
+
+    row = ctx.current
+    quality_str = row.get("_quality", "{}")
+    quality = _json.loads(quality_str) if isinstance(quality_str, str) else {}
+
+    sensors_status = {}
+    stuck_sensors = []
+
+    for s in ["P-PDG", "T-PDG", "P-TPT", "T-TPT", "P-MON-CKP",
+              "P-JUS-CKP", "T-JUS-CKP", "ABER-CKP", "QGL"]:
+        val = _clean(row.get(s))
+        flag = quality.get(s)
+        status = "ok" if flag is None else flag
+        sensors_status[s] = {"value": _round(val), "status": status}
+        if flag == "stuck":
+            # Count how long it's been stuck
+            w = ctx.window
+            if s in w.columns:
+                vals = w[s].dropna()
+                if len(vals) >= 2 and vals.nunique() == 1:
+                    stuck_sensors.append({"sensor": s, "duration_min": len(vals)})
+                else:
+                    # Count trailing identical values
+                    count = 1
+                    for i in range(len(vals) - 2, -1, -1):
+                        if vals.iloc[i] == vals.iloc[-1]:
+                            count += 1
+                        else:
+                            break
+                    stuck_sensors.append({"sensor": s, "duration_min": count})
+
+    return {
+        "available": True,
+        "source": "quality_check",
+        "sensors": sensors_status,
+        "stuck_sensors": stuck_sensors,
+        "flagged": [s for s, info in sensors_status.items() if info["status"] != "ok"],
+    }
+
+
 def tool_search_playbook(ctx: AgentContext, query: str = "hydrate response") -> dict:
     """RAG search over playbook docs."""
     try:
@@ -368,6 +411,8 @@ def _dispatch(name: str, ctx: AgentContext, args: dict) -> dict:
             return fn(ctx)
         elif name == "search_playbook":
             return fn(ctx, query=args.get("query", "hydrate response"))
+        elif name == "check_sensor_quality":
+            return fn(ctx)
         else:
             return fn(ctx, **args)
     except Exception as e:
@@ -451,6 +496,14 @@ TOOL_SCHEMAS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_sensor_quality",
+            "description": "Check data quality for all sensors: flags nonfinite, extreme, physically impossible, or stuck values.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
 ]
 
 TOOL_REGISTRY: dict[str, tuple] = {
@@ -461,6 +514,7 @@ TOOL_REGISTRY: dict[str, tuple] = {
     "methanol_dose": (tool_methanol_dose, TOOL_SCHEMAS[4]),
     "well_history": (tool_well_history, TOOL_SCHEMAS[5]),
     "search_playbook": (tool_search_playbook, TOOL_SCHEMAS[6]),
+    "check_sensor_quality": (tool_check_sensor_quality, TOOL_SCHEMAS[7]),
 }
 
 
