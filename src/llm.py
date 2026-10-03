@@ -1,13 +1,15 @@
-"""LLM client abstraction over OpenRouter (OpenAI-compatible).
+"""LLM client abstraction — multi-provider with Gemini, Groq, OpenRouter.
 
 Owner: Div
 
 Provides:
   - LLMClient interface with chat()
-  - OpenRouterClient: real calls via openai SDK, model rotation on failure
+  - ProviderPool: tries Gemini -> Groq -> OpenRouter, rotates on failure
+  - OpenAICompatClient: generic client for any OpenAI-compatible endpoint
   - MockLLMClient: scripted responses for testing
   - get_llm_client(): auto-selects based on env
-  - LLMUsageTracker: per-minute/per-day budget tracking
+  - LLMUsageTracker: per-provider budget tracking
+  - Pacing: minimum interval between calls per provider (LLM_MIN_INTERVAL_S)
 """
 from __future__ import annotations
 
@@ -25,6 +27,7 @@ from openai import OpenAI
 log = logging.getLogger("frostline.llm")
 
 USAGE_PATH = Path("data/state/llm_usage.json")
+LLM_MIN_INTERVAL_S = float(os.getenv("LLM_MIN_INTERVAL_S", "4"))
 
 
 @dataclass
@@ -41,6 +44,7 @@ class LLMResponse:
     usage: dict  # {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}
     model: str = ""
     cost_estimate: float = 0.0
+    provider: str = ""
 
 
 class LLMClient(ABC):
@@ -57,7 +61,7 @@ class LLMClient(ABC):
 
 
 # ---------------------------------------------------------------------------
-# Usage tracking
+# Usage tracking (per-provider)
 # ---------------------------------------------------------------------------
 
 class LLMUsageTracker:
@@ -72,7 +76,8 @@ class LLMUsageTracker:
                 return json.loads(USAGE_PATH.read_text())
             except Exception:
                 pass
-        return {"requests": [], "total_requests": 0, "total_tokens": 0}
+        return {"requests": [], "total_requests": 0, "total_tokens": 0,
+                "by_provider": {}}
 
     def _save(self):
         try:
@@ -81,12 +86,19 @@ class LLMUsageTracker:
         except Exception as e:
             log.warning("Failed to save usage: %s", e)
 
-    def record(self, model: str, tokens: int):
+    def record(self, model: str, tokens: int, provider: str = "unknown"):
         now = time.time()
-        self._data["requests"].append({"ts": now, "model": model, "tokens": tokens})
+        self._data["requests"].append({
+            "ts": now, "model": model, "tokens": tokens, "provider": provider,
+        })
         self._data["total_requests"] = self._data.get("total_requests", 0) + 1
         self._data["total_tokens"] = self._data.get("total_tokens", 0) + tokens
-        # Keep only last 24h of request timestamps
+        # Per-provider counts
+        bp = self._data.setdefault("by_provider", {})
+        prov = bp.setdefault(provider, {"requests": 0, "tokens": 0})
+        prov["requests"] += 1
+        prov["tokens"] += tokens
+        # Keep only last 24h
         cutoff = now - 86400
         self._data["requests"] = [r for r in self._data["requests"] if r["ts"] > cutoff]
         self._save()
@@ -104,6 +116,7 @@ class LLMUsageTracker:
             "requests_last_day": self.requests_last_day(),
             "total_requests": self._data.get("total_requests", 0),
             "total_tokens": self._data.get("total_tokens", 0),
+            "by_provider": self._data.get("by_provider", {}),
         }
 
 
@@ -115,31 +128,69 @@ def get_usage_tracker() -> LLMUsageTracker:
 
 
 # ---------------------------------------------------------------------------
-# OpenRouter client with model rotation
+# Generic OpenAI-compatible client (works for Gemini, Groq, OpenRouter)
 # ---------------------------------------------------------------------------
 
-class OpenRouterClient(LLMClient):
-    def __init__(self, api_key: str, model: str,
-                 model_pool: list[str] | None = None):
+class OpenAICompatClient(LLMClient):
+    """Client for any OpenAI-compatible API endpoint."""
+
+    def __init__(self, base_url: str, api_key: str, model: str,
+                 provider: str, headers: dict | None = None,
+                 model_pool: list[str] | None = None,
+                 timeout: float = 45.0):
         self.model = model
+        self.provider = provider
         self._pool = model_pool or [model]
         self._current_pool_idx = 0
-        # Set pool index to match the primary model
         for i, m in enumerate(self._pool):
             if m == model:
                 self._current_pool_idx = i
                 break
+        extra_headers = headers or {}
         self._client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
+            base_url=base_url,
             api_key=api_key,
-            default_headers={
-                "HTTP-Referer": "https://github.com/divakargaba/frostline",
-                "X-Title": "Frostline",
-            },
-            timeout=45.0,
+            default_headers=extra_headers,
+            timeout=timeout,
         )
         self._total_tokens = 0
-        self._total_cost = 0.0
+        self._last_call_ts = 0.0
+        self.disabled = False
+        self._disable_reason = ""
+
+    def _pace(self):
+        """Enforce minimum interval between calls."""
+        elapsed = time.time() - self._last_call_ts
+        if elapsed < LLM_MIN_INTERVAL_S:
+            wait = LLM_MIN_INTERVAL_S - elapsed
+            log.debug("Pacing %s: waiting %.1fs", self.provider, wait)
+            time.sleep(wait)
+        self._last_call_ts = time.time()
+
+    def check_health(self) -> bool:
+        """Quick health check — one cheap call. Returns True if provider works."""
+        try:
+            resp = self._client.chat.completions.create(
+                model=self._pool[0],
+                messages=[{"role": "user", "content": "ping"}],
+                max_tokens=5,
+                timeout=10,
+            )
+            if resp.choices:
+                return True
+            return False
+        except Exception as e:
+            code = getattr(e, "status_code", 0)
+            log.warning("Health check failed for %s: %s (code=%s)", self.provider, e, code)
+            if code == 429:
+                self.disabled = True
+                self._disable_reason = "rate_limited"
+            return False
+
+    def disable(self, reason: str = ""):
+        self.disabled = True
+        self._disable_reason = reason
+        log.warning("Provider %s disabled: %s", self.provider, reason)
 
     def chat(
         self,
@@ -149,6 +200,15 @@ class OpenRouterClient(LLMClient):
         temperature: float = 0,
         max_tokens: int = 1024,
     ) -> LLMResponse:
+        if self.disabled:
+            return LLMResponse(
+                content=None, tool_calls=[],
+                usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                model="disabled", provider=self.provider,
+            )
+
+        self._pace()
+
         kwargs: dict[str, Any] = dict(
             messages=messages,
             temperature=temperature,
@@ -158,23 +218,20 @@ class OpenRouterClient(LLMClient):
             kwargs["tools"] = tools
             kwargs["tool_choice"] = tool_choice
 
-        # Try models in pool order with exponential backoff
         models_tried = 0
         max_models = len(self._pool)
-        last_err = None
 
         while models_tried < max_models:
             model = self._pool[self._current_pool_idx]
             kwargs["model"] = model
 
-            for attempt in range(2):  # 2 attempts per model
+            for attempt in range(2):
                 try:
                     resp = self._client.chat.completions.create(**kwargs)
 
-                    # Check for empty choices
                     if not resp.choices:
-                        log.warning("Empty choices from %s, rotating", model)
-                        break  # Try next model
+                        log.warning("Empty choices from %s/%s, rotating", self.provider, model)
+                        break
 
                     msg = resp.choices[0].message
                     usage = {
@@ -191,6 +248,7 @@ class OpenRouterClient(LLMClient):
                                 try:
                                     args = json.loads(args)
                                 except json.JSONDecodeError:
+                                    log.warning("Malformed tool args from %s: %s", model, args)
                                     args = {}
                             tool_calls.append(ToolCall(
                                 id=tc.id,
@@ -199,26 +257,23 @@ class OpenRouterClient(LLMClient):
                             ))
 
                     self._total_tokens += usage["total_tokens"]
-                    self.model = model  # Track which model actually answered
-                    _usage_tracker.record(model, usage["total_tokens"])
-                    log.info("LLM [%s]: %d tokens (total: %d)",
-                             model, usage["total_tokens"], self._total_tokens)
+                    self.model = model
+                    _usage_tracker.record(model, usage["total_tokens"], provider=self.provider)
+                    log.info("LLM [%s/%s]: %d tokens", self.provider, model, usage["total_tokens"])
 
                     return LLMResponse(
                         content=msg.content,
                         tool_calls=tool_calls,
                         usage=usage,
                         model=model,
-                        cost_estimate=0.0,  # Free models
+                        cost_estimate=0.0,
+                        provider=self.provider,
                     )
 
                 except Exception as e:
-                    last_err = e
                     code = getattr(e, "status_code", 0)
                     if code == 429:
-                        # Check Retry-After header
-                        retry_after = getattr(e, "headers", {})
-                        wait = 2 ** (attempt + 1)  # Exponential backoff: 2, 4
+                        wait = 2 ** (attempt + 1)
                         if hasattr(e, "response") and hasattr(e.response, "headers"):
                             ra = e.response.headers.get("Retry-After")
                             if ra:
@@ -226,38 +281,88 @@ class OpenRouterClient(LLMClient):
                                     wait = min(int(ra), 10)
                                 except ValueError:
                                     pass
-                        log.warning("429 from %s, waiting %ds", model, wait)
+                        log.warning("429 from %s/%s, waiting %ds", self.provider, model, wait)
                         time.sleep(wait)
                         if attempt == 0:
-                            continue  # Retry same model once
-                        break  # Then rotate
+                            continue
+                        # Mark disabled on second 429
+                        self.disable("rate_limited_429")
+                        break
                     elif code in (500, 502, 503):
                         if attempt == 0:
-                            log.warning("%d from %s, retrying in 2s", code, model)
                             time.sleep(2)
                             continue
                         break
                     elif code == 403:
-                        log.warning("403 from %s, skipping", model)
+                        log.warning("403 from %s/%s, skipping", self.provider, model)
                         break
                     else:
-                        log.error("LLM error from %s: %s", model, e)
+                        log.error("LLM error from %s/%s: %s", self.provider, model, e)
                         break
 
-            # Rotate to next model
             self._current_pool_idx = (self._current_pool_idx + 1) % max_models
             models_tried += 1
-            log.info("Rotating to model %s", self._pool[self._current_pool_idx])
 
-        # All models exhausted
-        log.error("All models in pool exhausted")
+        log.error("All models exhausted for provider %s", self.provider)
         return LLMResponse(
-            content=None,
-            tool_calls=[],
+            content=None, tool_calls=[],
             usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-            model="exhausted",
+            model="exhausted", provider=self.provider,
         )
 
+
+# ---------------------------------------------------------------------------
+# Provider pool — tries providers in order, skips disabled
+# ---------------------------------------------------------------------------
+
+class ProviderPool(LLMClient):
+    """Tries multiple providers in order. Skips disabled providers."""
+
+    def __init__(self, providers: list[OpenAICompatClient]):
+        self.providers = providers
+        self.model = providers[0].model if providers else "none"
+
+    def chat(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        tool_choice: str = "auto",
+        temperature: float = 0,
+        max_tokens: int = 1024,
+    ) -> LLMResponse:
+        for provider in self.providers:
+            if provider.disabled:
+                log.debug("Skipping disabled provider %s", provider.provider)
+                continue
+            resp = provider.chat(messages, tools, tool_choice, temperature, max_tokens)
+            if resp.model != "exhausted" and resp.model != "disabled":
+                self.model = resp.model
+                return resp
+            log.warning("Provider %s exhausted, trying next", provider.provider)
+
+        log.error("All providers exhausted")
+        return LLMResponse(
+            content=None, tool_calls=[],
+            usage={"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            model="exhausted", provider="all",
+        )
+
+    def provider_status(self) -> list[dict]:
+        """Status of each provider for /health."""
+        return [
+            {
+                "provider": p.provider,
+                "model": p.model,
+                "disabled": p.disabled,
+                "reason": p._disable_reason if p.disabled else "",
+            }
+            for p in self.providers
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Mock client
+# ---------------------------------------------------------------------------
 
 @dataclass
 class MockLLMClient(LLMClient):
@@ -284,20 +389,111 @@ class MockLLMClient(LLMClient):
         )
 
 
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
+
+def _build_provider_pool() -> ProviderPool | None:
+    """Build provider pool from env vars: Gemini -> Groq -> OpenRouter."""
+    providers: list[OpenAICompatClient] = []
+
+    # Gemini (OpenAI-compatible endpoint)
+    gemini_key = os.getenv("GEMINI_API_KEY", "")
+    gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    if gemini_key:
+        providers.append(OpenAICompatClient(
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+            api_key=gemini_key,
+            model=gemini_model,
+            provider="gemini",
+            timeout=30.0,
+        ))
+
+    # Groq
+    groq_key = os.getenv("GROQ_API_KEY", "")
+    groq_model = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    if groq_key:
+        providers.append(OpenAICompatClient(
+            base_url="https://api.groq.com/openai/v1",
+            api_key=groq_key,
+            model=groq_model,
+            provider="groq",
+            timeout=30.0,
+        ))
+
+    # OpenRouter
+    openrouter_key = os.getenv("OPENROUTER_API_KEY", "")
+    openrouter_model = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-super-120b-a12b:free")
+    if openrouter_key:
+        pool_str = os.getenv("OPENROUTER_FREE_MODELS", "")
+        pool = [m.strip() for m in pool_str.split(",") if m.strip()] if pool_str else [openrouter_model]
+        providers.append(OpenAICompatClient(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=openrouter_key,
+            model=openrouter_model,
+            provider="openrouter",
+            headers={
+                "HTTP-Referer": "https://github.com/divakargaba/frostline",
+                "X-Title": "Frostline",
+            },
+            model_pool=pool,
+            timeout=45.0,
+        ))
+
+    if not providers:
+        return None
+    return ProviderPool(providers)
+
+
+# Cached pool instance (built once per process)
+_provider_pool: ProviderPool | None = None
+_pool_checked = False
+
+
+def _get_or_build_pool() -> ProviderPool | None:
+    global _provider_pool, _pool_checked
+    if _provider_pool is not None:
+        return _provider_pool
+    if _pool_checked:
+        return None
+    _pool_checked = True
+    _provider_pool = _build_provider_pool()
+    if _provider_pool:
+        # Quick health check on each provider at startup
+        for p in _provider_pool.providers:
+            ok = p.check_health()
+            if not ok:
+                log.warning("Provider %s failed health check — disabling", p.provider)
+                p.disable("health_check_failed")
+            else:
+                log.info("Provider %s healthy (%s)", p.provider, p.model)
+    return _provider_pool
+
+
 def get_llm_client() -> LLMClient:
-    """Return OpenRouterClient if credentials are set, else MockLLMClient."""
-    from backend.config import OPENROUTER_API_KEY, OPENROUTER_MODEL, LLM_MODE
+    """Return ProviderPool if any credentials set, else MockLLMClient."""
+    from backend.config import LLM_MODE
 
     if LLM_MODE == "mock":
         log.warning("LLM_MODE=mock — using MockLLMClient")
         return MockLLMClient()
 
-    if OPENROUTER_API_KEY:
-        model = OPENROUTER_MODEL or "nvidia/nemotron-3-super-120b-a12b:free"
-        pool_str = os.getenv("OPENROUTER_FREE_MODELS", "")
-        pool = [m.strip() for m in pool_str.split(",") if m.strip()] if pool_str else [model]
-        log.info("Using OpenRouter model %s (pool: %d models)", model, len(pool))
-        return OpenRouterClient(OPENROUTER_API_KEY, model, model_pool=pool)
+    pool = _get_or_build_pool()
+    if pool and any(not p.disabled for p in pool.providers):
+        active = [p.provider for p in pool.providers if not p.disabled]
+        log.info("Using ProviderPool: %s", ", ".join(active))
+        return pool
 
-    log.warning("No OPENROUTER_API_KEY — falling back to MockLLMClient")
+    log.warning("No active LLM providers — falling back to MockLLMClient")
     return MockLLMClient()
+
+
+def reset_provider_pool():
+    """Reset the cached pool (for testing)."""
+    global _provider_pool, _pool_checked
+    _provider_pool = None
+    _pool_checked = False
+
+
+# Keep OpenRouterClient as alias for backward compatibility
+OpenRouterClient = OpenAICompatClient
