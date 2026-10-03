@@ -1,11 +1,14 @@
 ---
 id: what_are_hydrates
-title: "What Gas Hydrates Are and Why They Form in Subsea Lines"
-tags: [hydrate, basics, formation, subsea]
+title: What Gas Hydrates Are and Why They Form in Subsea Lines
+tags:
+- hydrate
+- basics
+- formation
+- subsea
 sources:
-  - https://en.wikipedia.org/wiki/Clathrate_hydrate
-  - https://petrowiki.spe.org/Gas_hydrates
-  - https://www.sciencedirect.com/topics/engineering/gas-hydrate
+- https://en.wikipedia.org/wiki/Clathrate_hydrate
+- https://www.sciencedirect.com/topics/engineering/gas-hydrate
 ---
 
 # What Gas Hydrates Are and Why They Form in Subsea Lines

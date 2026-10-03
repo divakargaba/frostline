@@ -4,8 +4,8 @@ title: "Look-Alike: Choke Restriction and Flow Instability vs Hydrate"
 tags: [hydrate, look-alike, choke, flow_instability, slugging, restriction]
 sources:
   - https://github.com/petrobras/3W
-  - https://petrowiki.spe.org/Gas_hydrates
-  - https://doi.org/10.1016/j.petrol.2018.09.057
+  - https://en.wikipedia.org/wiki/Clathrate_hydrate
+  - https://doi.org/10.1016/j.petrol.2019.106223
 ---
 
 # Choke Restriction and Flow Instability vs Hydrate

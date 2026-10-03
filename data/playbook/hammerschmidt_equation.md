@@ -3,8 +3,8 @@ id: hammerschmidt_equation
 title: "Hammerschmidt Equation: What It Estimates and Its Limits"
 tags: [hydrate, hammerschmidt, inhibitor, dosing, equation]
 sources:
-  - https://petrowiki.spe.org/Hydrate_plug_remediation
-  - https://en.wikipedia.org/wiki/Hammerschmidt_equation
+  - https://en.wikipedia.org/wiki/Clathrate_hydrate#Removal
+  - https://www.semanticscholar.org/paper/Formation-of-Gas-Hydrates-in-Natural-Gas-Lines-Hammerschmidt/d08fdd28b3859f1c82297b3ac683beb0643f68b4
   - https://doi.org/10.1021/ie50264a002
 ---
 

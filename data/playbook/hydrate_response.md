@@ -3,9 +3,9 @@ id: hydrate_response
 title: "Hydrate Alert Response Checklist"
 tags: [hydrate, response, checklist, operations, alert, procedure]
 sources:
-  - https://petrowiki.spe.org/Hydrate_plug_remediation
-  - https://petrowiki.spe.org/Gas_hydrates
-  - https://doi.org/10.1016/B978-0-12-382182-9.00001-3
+  - https://en.wikipedia.org/wiki/Clathrate_hydrate#Removal
+  - https://en.wikipedia.org/wiki/Clathrate_hydrate
+  - https://doi.org/10.1201/9781420008494
 ---
 
 # Hydrate Alert Response Checklist

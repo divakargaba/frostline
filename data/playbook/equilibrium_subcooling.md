@@ -1,11 +1,14 @@
 ---
 id: equilibrium_subcooling
-title: "Hydrate Equilibrium Curve and Subcooling"
-tags: [hydrate, equilibrium, subcooling, thermodynamics]
+title: Hydrate Equilibrium Curve and Subcooling
+tags:
+- hydrate
+- equilibrium
+- subcooling
+- thermodynamics
 sources:
-  - https://petrowiki.spe.org/Gas_hydrates
-  - https://en.wikipedia.org/wiki/Clathrate_hydrate
-  - https://doi.org/10.1016/B978-0-12-382182-9.00001-3
+- https://en.wikipedia.org/wiki/Clathrate_hydrate
+- https://doi.org/10.1201/9781420008494
 ---
 
 # Hydrate Equilibrium Curve and Subcooling

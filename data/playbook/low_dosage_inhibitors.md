@@ -3,8 +3,8 @@ id: low_dosage_inhibitors
 title: "Low-Dosage Hydrate Inhibitors (LDHI)"
 tags: [hydrate, inhibitor, kinetic, anti-agglomerant, LDHI, KHI, AA]
 sources:
-  - https://petrowiki.spe.org/Gas_hydrates
-  - https://doi.org/10.1016/j.fuel.2019.116423
+  - https://en.wikipedia.org/wiki/Clathrate_hydrate
+  - https://link.springer.com/article/10.1007/s13202-019-00812-4
   - https://en.wikipedia.org/wiki/Clathrate_hydrate#Prevention
 ---
 

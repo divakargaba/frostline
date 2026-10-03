@@ -4,8 +4,8 @@ title: "Cost of Hydrate Events in Offshore Production"
 tags: [hydrate, cost, economics, production_loss, value]
 sources:
   - context/hackathon/case9_README.md
-  - https://petrowiki.spe.org/Gas_hydrates
-  - https://doi.org/10.1016/j.petrol.2018.09.057
+  - https://en.wikipedia.org/wiki/Clathrate_hydrate
+  - https://doi.org/10.1016/j.petrol.2019.106223
 ---
 
 # Cost of Hydrate Events

@@ -3,8 +3,8 @@ id: shutdown_restart_risk
 title: "Shutdown and Restart Risk: Cooldown Time"
 tags: [hydrate, shutdown, restart, cooldown, transient, operations]
 sources:
-  - https://petrowiki.spe.org/Gas_hydrates
-  - https://doi.org/10.1016/B978-0-12-382182-9.00001-3
+  - https://en.wikipedia.org/wiki/Clathrate_hydrate
+  - https://doi.org/10.1201/9781420008494
 ---
 
 # Shutdown and Restart Risk

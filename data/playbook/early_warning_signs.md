@@ -3,8 +3,8 @@ id: early_warning_signs
 title: "Early Warning Signs of Hydrate Formation in Operating Data"
 tags: [hydrate, warning, sensors, detection, pressure, temperature]
 sources:
-  - https://petrowiki.spe.org/Gas_hydrates
-  - https://doi.org/10.1016/j.petrol.2018.09.057
+  - https://en.wikipedia.org/wiki/Clathrate_hydrate
+  - https://doi.org/10.1016/j.petrol.2019.106223
   - https://github.com/petrobras/3W
 ---
 

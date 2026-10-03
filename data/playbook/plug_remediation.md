@@ -1,11 +1,16 @@
 ---
 id: plug_remediation
-title: "Hydrate Plug Remediation: Depressurization, Heating, and Inhibitor Injection"
-tags: [hydrate, plug, remediation, depressurization, safety, intervention]
+title: 'Hydrate Plug Remediation: Depressurization, Heating, and Inhibitor Injection'
+tags:
+- hydrate
+- plug
+- remediation
+- depressurization
+- safety
+- intervention
 sources:
-  - https://petrowiki.spe.org/Hydrate_plug_remediation
-  - https://doi.org/10.1016/B978-0-12-382182-9.00001-3
-  - https://en.wikipedia.org/wiki/Clathrate_hydrate#Removal
+- https://en.wikipedia.org/wiki/Clathrate_hydrate#Removal
+- https://doi.org/10.1201/9781420008494
 ---
 
 # Hydrate Plug Remediation

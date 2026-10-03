@@ -4,8 +4,8 @@ title: "Alarm Fatigue: Why False Alarms Matter"
 tags: [alarm, fatigue, safety, advisory, operations, human_factors]
 sources:
   - https://en.wikipedia.org/wiki/Alarm_fatigue
-  - https://doi.org/10.1016/j.psep.2018.05.029
-  - https://www.aiche.org/ccps/resources/publications
+  - https://www.isa.org/standards-and-publications/isa-standards/isa-18-series-of-standards
+  - https://www.aiche.org/ccps/publications
 ---
 
 # Alarm Fatigue: Why False Alarms Matter

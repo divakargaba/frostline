@@ -3,9 +3,9 @@ id: thermodynamic_inhibitors
 title: "Thermodynamic Inhibitors: Methanol vs MEG"
 tags: [hydrate, inhibitor, methanol, MEG, prevention, treatment]
 sources:
-  - https://petrowiki.spe.org/Hydrate_plug_remediation
+  - https://en.wikipedia.org/wiki/Clathrate_hydrate#Removal
   - https://en.wikipedia.org/wiki/Clathrate_hydrate#Prevention
-  - https://doi.org/10.1016/B978-0-12-382182-9.00001-3
+  - https://doi.org/10.1201/9781420008494
 ---
 
 # Thermodynamic Inhibitors: Methanol vs MEG
