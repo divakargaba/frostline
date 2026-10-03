@@ -73,7 +73,7 @@ class AgentContext:
 # ---------------------------------------------------------------------------
 
 class ModelAdapter:
-    """Loads and wraps a LightGBM model from models/frostline_v<N>/."""
+    """Loads a LightGBM model from models/frostline_v<N>/ or models/lgbm_hydrate.pkl."""
 
     def __init__(self):
         self.model = None
@@ -83,17 +83,32 @@ class ModelAdapter:
         self.class_map: dict[str, str] = {}
         self.ready = False
         self.error: str = ""
+        self.source: str = ""
         self._load()
 
     def _load(self):
         if not MODELS_DIR.exists():
             self.error = "models/ directory not found"
             return
+
+        # Try frostline_v*/ first (contract format)
         versions = sorted(MODELS_DIR.glob("frostline_v*/"), key=lambda p: p.name)
-        if not versions:
-            self.error = "no frostline_v*/ directories found"
+        if versions:
+            self._load_contract(versions[-1])
+            if self.ready:
+                return
+
+        # Fall back to Zaine's joblib pkl via src.model.load_model
+        pkl_path = MODELS_DIR / "lgbm_hydrate.pkl"
+        if pkl_path.exists():
+            self._load_pkl(pkl_path)
             return
-        model_dir = versions[-1]  # newest
+
+        if not self.error:
+            self.error = "no model found (no frostline_v*/ or lgbm_hydrate.pkl)"
+
+    def _load_contract(self, model_dir: Path):
+        """Load from models/frostline_v<N>/ (model.txt + metadata.json)."""
         meta_path = model_dir / "metadata.json"
         model_path = model_dir / "model.txt"
 
@@ -125,6 +140,7 @@ class ModelAdapter:
             import lightgbm as lgb
             self.model = lgb.Booster(model_file=str(model_path))
             self.ready = True
+            self.source = f"contract:{model_dir.name}"
             log.info("Loaded model from %s (%d features, %d classes)",
                      model_dir.name, len(self.feature_order), len(self.classes))
         except ImportError:
@@ -132,12 +148,50 @@ class ModelAdapter:
         except Exception as e:
             self.error = f"model load failed: {e}"
 
+    def _load_pkl(self, pkl_path: Path):
+        """Load from Zaine's joblib bundle (models/lgbm_hydrate.pkl)."""
+        try:
+            from src.model import load_model, FINE_CLASSES, GROUPS
+            bundle = load_model(str(pkl_path))
+            self.model = bundle
+            self.feature_order = bundle.get("features", [])
+            self.classes = bundle.get("classes", FINE_CLASSES)
+            self.metadata = {
+                "source": "lgbm_hydrate.pkl",
+                "n_features": len(self.feature_order),
+                "classes": self.classes,
+            }
+            self.ready = True
+            self.source = "pkl:lgbm_hydrate.pkl"
+            log.info("Loaded model from lgbm_hydrate.pkl (%d features, %d classes)",
+                     len(self.feature_order), len(self.classes))
+        except Exception as e:
+            self.error = f"pkl load failed: {e}"
+
     def predict(self, window_df: pd.DataFrame) -> dict | None:
         """Predict on the last row of window_df. Returns {p_hydrate, p_lookalike, p_normal}."""
         if not self.ready or self.model is None:
             return None
 
-        # Build feature array from the last row
+        # pkl bundle: use src.model.predict which handles features + smoothing
+        if self.source.startswith("pkl:"):
+            try:
+                from src.model import predict as _predict
+                out = _predict(window_df, model=self.model)
+                last = out.iloc[-1]
+                p_h = last.get("p_hydrate")
+                if p_h is None or (isinstance(p_h, float) and np.isnan(p_h)):
+                    return None
+                return {
+                    "p_hydrate": float(last["p_hydrate"]),
+                    "p_lookalike": float(last.get("p_lookalike", 0)),
+                    "p_normal": float(last.get("p_normal", 0)),
+                }
+            except Exception as e:
+                log.error("pkl predict failed: %s", e)
+                return None
+
+        # Contract format: build feature array from the last row
         last = window_df.iloc[-1:]
         missing = [f for f in self.feature_order if f not in last.columns]
         if missing:
@@ -154,7 +208,6 @@ class ModelAdapter:
         # Map to standard output
         result: dict[str, float] = {"p_hydrate": 0.0, "p_lookalike": 0.0, "p_normal": 0.0}
         if len(self.classes) == 2:
-            # Binary: [normal, hydrate] or single score
             if proba.ndim == 1:
                 score = float(proba[0])
             else:
@@ -162,7 +215,6 @@ class ModelAdapter:
             result["p_hydrate"] = score
             result["p_normal"] = 1.0 - score
         elif len(self.classes) >= 3:
-            # Multi-class
             if proba.ndim == 1:
                 proba = proba.reshape(1, -1)
             for i, cls in enumerate(self.classes):

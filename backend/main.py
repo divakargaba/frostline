@@ -80,7 +80,7 @@ def _model_status() -> str:
         from src.tools import get_model_adapter
         adapter = get_model_adapter()
         if adapter.ready:
-            return f"loaded ({len(adapter.classes)} classes)"
+            return f"loaded via {adapter.source} ({len(adapter.classes)} classes)"
         return adapter.error or "not loaded"
     except Exception:
         return "adapter error"
