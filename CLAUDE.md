@@ -2,19 +2,44 @@ Read context/claude.md for project context and reference reading.
 
 ## Current implementation checkpoint
 
-The runnable research prototype is documented in README.md. It uses `src/research.py`
-for the causal seed workflow and bounded policy search, and `src/real_pilot.py` for
-whole-well held-out 3W evaluation. The dashboard consumes measured API results.
-The default Live agent page uses `src/live_agent.py` and `backend/live.py` for
-incremental sensor processing, actual conditional tool calls, pause/step/stop,
-future-input fault injection, live 24-candidate validation and frozen final testing.
-Its controller is deterministic; no LLM is configured. Historical labels reach
-the evaluator only after each decision. Sessions are in memory; JSON exports
-preserve the complete event journal. Recorded replays remain a separate page.
-The architecture below remains the broader project plan: physics, dosing,
-forecasting, LLM/RAG and voice stubs are not claims about implemented behavior.
-Research-round IDs in the UI describe the seed ablations, not the proposed
-physics/ML system IDs below. Do not replace measured results with mock fixtures.
+The implemented workflow and commands are in README.md. The current scope is the
+existing 31-recording / 21-well 3W subset with causal one-minute processing and
+four fixed demo wells: WELL-00001, 00002, 00006 and 00019. Keep the subset and
+original files; do not expand to configurable fleets or the full dataset.
+
+The default map uses `frontend/src/FleetDashboard.tsx` and `backend/fleet.py`:
+four independent feeds, map above graphs, priority/assessment rail, acknowledgment,
+operator observations, targeted telemetry faults, scheduled follow-ups and SSE.
+Source timestamps are naive; label them source time, not verified UTC. Map
+positions and alignment across separate recordings are illustrative.
+
+`src/fleet_model.py` trains a saved LightGBM bundle on 17 other wells, with every
+recording of the four demo wells excluded. Three grouped validation folds select
+a threshold/persistence policy before the 11-recording holdout is scored. Run
+`python scripts/train_fleet_model.py`; Results reads the resulting measured report.
+The selected policy reduces false alarms but delays detection. All four held-out
+hydrate recordings are from one well; do not imply four independent hydrate wells.
+Labels never enter runtime model/LLM snapshots. Missing or invalid data remains
+visible. QGL is gas-lift flow, not an oil-production measurement.
+
+`src/fleet_llm.py` implements bounded OpenRouter tool investigations and structured
+assessment validation. The watcher triggers on changed evidence and due rechecks,
+with two concurrent investigations and shared account/request bounds. Stale
+decisions are rejected. Missing keys/provider failures retain numerical monitoring.
+**Live provider verification is pending by user choice.** Mocked integration tests
+prove tool orchestration, not external inference. A configured key must not be
+labeled a successful live assessment. Never reveal or commit `.env` credentials.
+
+The separate synthetic seed workflow remains under More → Seed sandbox, using
+`src/research.py`, `src/live_agent.py` and `backend/live.py`. Its first 10 days
+calibrate, next 10 select, and last 10 score; final thresholds refit on days 1–20.
+This is separate from the grouped 3W training protocol. The older out-of-fold pilot
+also remains available and is not the new model's holdout score.
+
+The broader architecture below is future context. Physics, dosing, forecasting,
+vector retrieval, voice and equipment actuation are unimplemented. Keep the
+operator interface concise and show evidence on demand. Do not replace measured
+results with mocks or turn historical labels into predetermined runtime diagnoses.
 
 ---
 

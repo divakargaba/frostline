@@ -33,6 +33,7 @@ import {
 } from "recharts";
 import type { Metrics, Policy } from "./types";
 import "./live.css";
+import WellOverview from "./WellOverview";
 
 type Status = "paused" | "running" | "completed" | "cancelled" | "failed";
 type Reading = {
@@ -43,7 +44,7 @@ type Reading = {
   decision: string | null;
   ground_truth?: string | null;
 };
-type Decision = {
+export type Decision = {
   t: string;
   decision: string;
   diagnosis: string;
@@ -106,7 +107,7 @@ type AgentEvent = {
   server_time: string;
   payload: Payload;
 };
-type Run = {
+export type Run = {
   id: string;
   scenario: string;
   status: Status;
@@ -296,6 +297,7 @@ export default function LiveMission() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [journalOpen, setJournalOpen] = useState(false);
+  const [diagnostics, setDiagnostics] = useState(false);
   const source = useRef<EventSource | null>(null);
   const lastId = useRef(0);
 
@@ -419,8 +421,34 @@ export default function LiveMission() {
     injection: f.injection,
   }));
 
+  if (!diagnostics)
+    return (
+      <WellOverview
+        run={run}
+        connected={connected}
+        busy={busy}
+        error={error}
+        scenario={scenario}
+        speed={speed}
+        onScenario={setScenario}
+        onSpeed={(next) => {
+          setSpeed(next);
+          if (active) void command("speed", { speed: next });
+        }}
+        onStart={start}
+        onCommand={command}
+        onDiagnostics={() => setDiagnostics(true)}
+      />
+    );
+
   return (
     <section className="live-room">
+      <button
+        className="button secondary diagnostics-back"
+        onClick={() => setDiagnostics(false)}
+      >
+        ← Back to well map
+      </button>
       <div className="page-heading">
         <div>
           <div className="eyebrow">THE AGENT, AT WORK</div>

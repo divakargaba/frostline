@@ -8,9 +8,11 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from src.research import ROOT, experiment, seed_scenarios
 from backend.live import router as live_router
+from backend.fleet import router as fleet_router, capabilities as fleet_capabilities
 
 app = FastAPI(title="Frostline research prototype", version="0.2.0")
 app.include_router(live_router)
+app.include_router(fleet_router)
 app.add_middleware(CORSMiddleware, allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"], allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
 
 
@@ -41,7 +43,7 @@ def scenarios():
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "mode": "local research replay", "real_pilot": real_report()["status"]}
+    return {"status": "ok", "mode": "local research replay", "real_pilot": real_report()["status"], "fleet": fleet_capabilities()}
 
 
 @app.get("/api/research")

@@ -16,6 +16,8 @@ import {
   Gauge,
   Layers3,
   LoaderCircle,
+  MapPinned,
+  Ellipsis,
   Pause,
   Play,
   Radio,
@@ -41,17 +43,19 @@ import {
 } from "recharts";
 import type { Frame, Report, Scenario } from "./types";
 import LiveMission from "./LiveMission";
+import FleetDashboard, { FleetResults } from "./FleetDashboard";
 import "@fontsource-variable/dm-sans";
 import "@fontsource-variable/manrope";
 import "./style.css";
 
-type Page = "live" | "monitor" | "experiments" | "real" | "method";
+type Page = "live" | "legacy" | "monitor" | "experiments" | "real" | "method";
 const nav = [
-  { id: "live", label: "Live agent", icon: Activity },
-  { id: "monitor", label: "Recorded replays", icon: Gauge },
-  { id: "experiments", label: "Improvement lab", icon: FlaskConical },
-  { id: "real", label: "Real-world validation", icon: Layers3 },
-  { id: "method", label: "Research & method", icon: BookOpen },
+  { id: "live", label: "Well map", icon: MapPinned },
+  { id: "legacy", label: "Seed sandbox", icon: Activity },
+  { id: "monitor", label: "Replays", icon: Gauge },
+  { id: "experiments", label: "Results", icon: FlaskConical },
+  { id: "real", label: "Real-well pilot", icon: Layers3 },
+  { id: "method", label: "How it works", icon: BookOpen },
 ] as const;
 const pct = (x: number | null | undefined) =>
   x == null ? "—" : `${(x * 100).toFixed(1)}%`;
@@ -74,6 +78,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 function App() {
   const [page, setPage] = useState<Page>("live");
+  const [moreOpen, setMoreOpen] = useState(false);
   const [report, setReport] = useState<Report | null>(null);
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
   const [selected, setSelected] = useState("seed-test");
@@ -162,8 +167,12 @@ function App() {
   }
   function download() {
     const link = document.createElement("a");
-    link.href = "/api/research/export";
-    link.download = "frostline-research-results.json";
+    link.href =
+      page === "experiments" ? "/api/fleet/results" : "/api/research/export";
+    link.download =
+      page === "experiments"
+        ? "frostline-fleet-results.json"
+        : "frostline-research-results.json";
     link.click();
   }
   const frame = replay?.frames[cursor];
@@ -193,43 +202,44 @@ function App() {
             <Waves size={19} />
           </span>
           <div>
-            Offshore intelligence<small>Case 09 · Energy systems</small>
+            Well operations<small>Case 09</small>
           </div>
         </div>
         <div className="nav-heading">WORKSPACE</div>
         <nav aria-label="Main navigation">
-          {nav.map((item) => (
-            <button
-              key={item.id}
-              title={item.label}
-              aria-current={page === item.id ? "page" : undefined}
-              className={`nav-item ${page === item.id ? "active" : ""}`}
-              onClick={() => setPage(item.id)}
-            >
-              <item.icon size={18} />
-              {item.label}
-              {page === item.id && <span className="nav-marker" />}
-            </button>
-          ))}
-        </nav>
-        <div className="sidebar-lab">
-          <span className="tiny-label">BUILT TO BE QUESTIONED</span>
-          <FlaskConical size={23} />
-          <h3>
-            Every claim,
-            <br />
-            backed by a run.
-          </h3>
-          <p>Trace the data, the decision, and the tradeoff.</p>
-          <button onClick={() => setPage("method")}>
-            Explore the method <ArrowUpRight size={16} />
+          {nav
+            .filter(
+              (item) =>
+                item.id === "live" || item.id === "experiments" || moreOpen,
+            )
+            .map((item) => (
+              <button
+                key={item.id}
+                title={item.label}
+                aria-current={page === item.id ? "page" : undefined}
+                className={`nav-item ${page === item.id ? "active" : ""}`}
+                onClick={() => setPage(item.id)}
+              >
+                <item.icon size={18} />
+                {item.label}
+                {page === item.id && <span className="nav-marker" />}
+              </button>
+            ))}
+          <button
+            className="nav-item nav-more"
+            aria-expanded={moreOpen}
+            title={moreOpen ? "Less" : "More"}
+            onClick={() => setMoreOpen(!moreOpen)}
+          >
+            <Ellipsis size={18} />
+            {moreOpen ? "Less" : "More"}
           </button>
-        </div>
+        </nav>
         <div className="sidebar-footer">
           <span className="status-dot" />
           <div>
-            Local research environment
-            <small>Historical replay · advisory only</small>
+            Historical demo
+            <small>Operator advice</small>
           </div>
         </div>
       </aside>
@@ -242,7 +252,7 @@ function App() {
             <strong>{nav.find((n) => n.id === page)?.label}</strong>
           </div>
           <span className="prototype">
-            <span /> RESEARCH PROTOTYPE
+            <span /> DEMO
           </span>
         </header>
         <div className="content">
@@ -277,18 +287,21 @@ function App() {
               </button>
             </div>
           )}
-          {!report ? (
+          <div hidden={page !== "live"}>
+            <FleetDashboard />
+          </div>
+          {!report && page !== "live" ? (
             <div className="loading">
               <LoaderCircle className="spin" size={26} />
               <h2>Preparing the evidence</h2>
               <p>Loading reproducible experiments and replay scenarios.</p>
             </div>
-          ) : (
+          ) : report ? (
             <>
-              <div hidden={page !== "live"}>
+              <div hidden={page !== "legacy"}>
                 <LiveMission />
               </div>
-              {page !== "live" && (
+              {page !== "live" && page !== "legacy" && (
                 <div className="page-heading">
                   <div>
                     <div className="eyebrow">
@@ -313,14 +326,17 @@ function App() {
                       {page === "monitor"
                         ? "Replay a well, inspect the evidence, and follow the agent’s next move."
                         : page === "experiments"
-                          ? "Compare the starter, isolated changes, and the policy chosen by validation evidence."
+                          ? "Measured real-well model results, with the original synthetic starter experiment available separately below."
                           : page === "real"
                             ? "Real Petrobras recordings, with entire wells held out during model training."
                             : "What we built, why it works this way, and exactly what we can claim."}
                     </p>
                   </div>
                   <button className="button secondary" onClick={download}>
-                    <Download size={16} /> Export evidence
+                    <Download size={16} />{" "}
+                    {page === "experiments"
+                      ? "Export fleet evidence"
+                      : "Export evidence"}
                   </button>
                 </div>
               )}
@@ -650,241 +666,263 @@ function App() {
 
               {page === "experiments" && (
                 <>
-                  <SplitTimeline report={report} />
-                  <section className="panel experiment-panel">
-                    <div className="panel-heading">
-                      <div>
-                        <h3>The improvement ladder</h3>
-                        <p>
-                          Bad-hour detection, without giving credit for hours
-                          the system missed.
-                        </p>
-                      </div>
-                      <div className="segmented">
-                        <button
-                          className={period === "test" ? "chosen" : ""}
-                          onClick={() => setPeriod("test")}
-                        >
-                          Final test · 10 days
-                        </button>
-                        <button
-                          className={period === "validation" ? "chosen" : ""}
-                          onClick={() => setPeriod("validation")}
-                        >
-                          Validation · 10 days
-                        </button>
-                      </div>
+                  <FleetResults />
+                  <details className="fleet-seed-details">
+                    <summary>
+                      Official starter baseline · synthetic 20/10-day experiment
+                    </summary>
+                    <div className="fleet-seed-export">
+                      <a
+                        className="fleet-text-button"
+                        href="/api/research/export"
+                        download="frostline-seed-results.json"
+                      >
+                        <Download size={13} />
+                        Export seed evidence
+                      </a>
                     </div>
-                    <div className="table-scroll">
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Round / change</th>
-                            <th>Bad hours caught</th>
-                            <th>Recall</th>
-                            <th>False hours</th>
-                            <th>Delay after onset</th>
-                            <th>Cost ↓</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {report.systems.map((s) => (
-                            <tr
-                              key={s.id}
-                              className={s.id === "AUTO" ? "selected-row" : ""}
-                            >
-                              <td>
-                                <div className="system-cell">
-                                  <span className="system-code">{s.id}</span>
-                                  <div>
-                                    <strong>{s.name}</strong>
-                                    <small>{s.description}</small>
-                                  </div>
-                                </div>
-                              </td>
-                              <td>
-                                <b>{s[period].true_positive}</b> /{" "}
-                                {s[period].bad_hours}
-                              </td>
-                              <td>
-                                <div className="recall-cell">
-                                  <div>
-                                    <span
-                                      style={{
-                                        width: `${(s[period].recall || 0) * 100}%`,
-                                      }}
-                                    />
-                                  </div>
-                                  {pct(s[period].recall)}
-                                </div>
-                              </td>
-                              <td>{s[period].false_positive}</td>
-                              <td>
-                                {s[period].delay_hours == null
-                                  ? "No detection"
-                                  : `${s[period].delay_hours}h`}
-                              </td>
-                              <td>{s[period].cost}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                    <div className="table-note">
-                      <CircleHelp size={14} />
-                      {period === "test"
-                        ? "Final test contains ONE 12-hour incident. Every detecting system catches that same incident; the improvement is coverage and speed."
-                        : "Validation contains ONE 30-hour incident. Candidate thresholds are fitted only on days 1–10."}
-                    </div>
-                  </section>
-                  <div className="two-columns">
-                    <section className="panel selector-panel">
+                    <SplitTimeline report={report} />
+                    <section className="panel experiment-panel">
                       <div className="panel-heading">
                         <div>
-                          <div className="eyebrow">AUTONOMOUS IMPROVEMENT</div>
-                          <h3>Search. Score. Promote. Freeze.</h3>
+                          <h3>The improvement ladder</h3>
+                          <p>
+                            Bad-hour detection, without giving credit for hours
+                            the system missed.
+                          </p>
                         </div>
-                        <Sparkles size={23} />
+                        <div className="segmented">
+                          <button
+                            className={period === "test" ? "chosen" : ""}
+                            onClick={() => setPeriod("test")}
+                          >
+                            Final test · 10 days
+                          </button>
+                          <button
+                            className={period === "validation" ? "chosen" : ""}
+                            onClick={() => setPeriod("validation")}
+                          >
+                            Validation · 10 days
+                          </button>
+                        </div>
                       </div>
-                      <p>
-                        The system proposes 24 sensor rules, compares their
-                        validation cost, and promotes a winner only if it beats
-                        the incumbent.
-                      </p>
-                      <div className="formula">
-                        5 <span>× missed bad hours</span> +{" "}
-                        <span>false-alarm hours</span>
+                      <div className="table-scroll">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Round / change</th>
+                              <th>Bad hours caught</th>
+                              <th>Recall</th>
+                              <th>False hours</th>
+                              <th>Delay after onset</th>
+                              <th>Cost ↓</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {report.systems.map((s) => (
+                              <tr
+                                key={s.id}
+                                className={
+                                  s.id === "AUTO" ? "selected-row" : ""
+                                }
+                              >
+                                <td>
+                                  <div className="system-cell">
+                                    <span className="system-code">{s.id}</span>
+                                    <div>
+                                      <strong>{s.name}</strong>
+                                      <small>{s.description}</small>
+                                    </div>
+                                  </div>
+                                </td>
+                                <td>
+                                  <b>{s[period].true_positive}</b> /{" "}
+                                  {s[period].bad_hours}
+                                </td>
+                                <td>
+                                  <div className="recall-cell">
+                                    <div>
+                                      <span
+                                        style={{
+                                          width: `${(s[period].recall || 0) * 100}%`,
+                                        }}
+                                      />
+                                    </div>
+                                    {pct(s[period].recall)}
+                                  </div>
+                                </td>
+                                <td>{s[period].false_positive}</td>
+                                <td>
+                                  {s[period].delay_hours == null
+                                    ? "No detection"
+                                    : `${s[period].delay_hours}h`}
+                                </td>
+                                <td>{s[period].cost}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
                       </div>
-                      <div className="promotion">
-                        <div>
-                          <small>Incumbent validation cost</small>
-                          <strong>{report.selection.incumbent_cost}</strong>
+                      <div className="table-note">
+                        <CircleHelp size={14} />
+                        {period === "test"
+                          ? "Final test contains ONE 12-hour incident. Every detecting system catches that same incident; the improvement is coverage and speed."
+                          : "Validation contains ONE 30-hour incident. Candidate thresholds are fitted only on days 1–10."}
+                      </div>
+                    </section>
+                    <div className="two-columns">
+                      <section className="panel selector-panel">
+                        <div className="panel-heading">
+                          <div>
+                            <div className="eyebrow">
+                              AUTONOMOUS IMPROVEMENT
+                            </div>
+                            <h3>Search. Score. Promote. Freeze.</h3>
+                          </div>
+                          <Sparkles size={23} />
                         </div>
-                        <ArrowRight size={22} />
-                        <div>
-                          <small>Selected validation cost</small>
-                          <strong>{report.selection.validation_cost}</strong>
+                        <p>
+                          The system proposes 24 sensor rules, compares their
+                          validation cost, and promotes a winner only if it
+                          beats the incumbent.
+                        </p>
+                        <div className="formula">
+                          5 <span>× missed bad hours</span> +{" "}
+                          <span>false-alarm hours</span>
                         </div>
-                        <span className="tag teal">
-                          <Check size={13} />
-                          {report.selection.promoted ? "Promoted" : "Retained"}
+                        <div className="promotion">
+                          <div>
+                            <small>Incumbent validation cost</small>
+                            <strong>{report.selection.incumbent_cost}</strong>
+                          </div>
+                          <ArrowRight size={22} />
+                          <div>
+                            <small>Selected validation cost</small>
+                            <strong>{report.selection.validation_cost}</strong>
+                          </div>
+                          <span className="tag teal">
+                            <Check size={13} />
+                            {report.selection.promoted
+                              ? "Promoted"
+                              : "Retained"}
+                          </span>
+                        </div>
+                        <p className="muted small">
+                          {report.selection.weight_note} Final test scores never
+                          choose a candidate.
+                        </p>
+                        <button
+                          className="button primary"
+                          disabled={running}
+                          onClick={rerun}
+                        >
+                          {running ? (
+                            <LoaderCircle size={16} className="spin" />
+                          ) : (
+                            <RefreshCw size={16} />
+                          )}{" "}
+                          {running
+                            ? "Reproducing experiment…"
+                            : "Reproduce the experiment"}
+                        </button>
+                      </section>
+                      <section className="panel policy-panel">
+                        <div className="panel-heading">
+                          <div>
+                            <div className="eyebrow">FROZEN FOR REPLAY</div>
+                            <h3>The selected operating rule</h3>
+                          </div>
+                          <ShieldCheck size={23} />
+                        </div>
+                        <div className="rule-line">
+                          <span>01</span>
+                          <p>
+                            Pressure below{" "}
+                            <strong>
+                              {num(auto?.policy?.pressure_cutoff, 2)} bar
+                            </strong>
+                            <small>
+                              P{auto?.policy?.pressure_percentile} refitted on
+                              days 1–20
+                            </small>
+                          </p>
+                        </div>
+                        <div className="rule-line">
+                          <span>02</span>
+                          <p>
+                            Temperature below{" "}
+                            <strong>
+                              {num(auto?.policy?.temperature_cutoff, 2)} °C
+                            </strong>
+                            <br />
+                            or flow below{" "}
+                            <strong>
+                              {num(auto?.policy?.flow_cutoff, 2)} L/s
+                            </strong>
+                            <small>
+                              Confirmation from at least one second sensor
+                            </small>
+                          </p>
+                        </div>
+                        <div className="rule-line">
+                          <span>03</span>
+                          <p>
+                            Evidence persists for{" "}
+                            <strong>
+                              {auto?.policy?.consecutive} hourly sample(s)
+                            </strong>
+                            <small>
+                              Quality checks first; follow-up in 60 minutes
+                            </small>
+                          </p>
+                        </div>
+                        <div className="policy-fingerprint">
+                          <span>POLICY FINGERPRINT</span>
+                          <code>{report.policy_id}</code>
+                        </div>
+                      </section>
+                    </div>
+                    <section className="panel">
+                      <div className="panel-heading">
+                        <div>
+                          <h3>All 24 candidates</h3>
+                          <p>
+                            Fitted on calibration days; ranked on validation
+                            days. Full search history, including rejections.
+                          </p>
+                        </div>
+                        <span className="tag">
+                          Trial {report.selection.selected_trial} selected
                         </span>
                       </div>
-                      <p className="muted small">
-                        {report.selection.weight_note} Final test scores never
-                        choose a candidate.
-                      </p>
-                      <button
-                        className="button primary"
-                        disabled={running}
-                        onClick={rerun}
-                      >
-                        {running ? (
-                          <LoaderCircle size={16} className="spin" />
-                        ) : (
-                          <RefreshCw size={16} />
-                        )}{" "}
-                        {running
-                          ? "Reproducing experiment…"
-                          : "Reproduce the experiment"}
-                      </button>
-                    </section>
-                    <section className="panel policy-panel">
-                      <div className="panel-heading">
-                        <div>
-                          <div className="eyebrow">FROZEN FOR REPLAY</div>
-                          <h3>The selected operating rule</h3>
-                        </div>
-                        <ShieldCheck size={23} />
-                      </div>
-                      <div className="rule-line">
-                        <span>01</span>
-                        <p>
-                          Pressure below{" "}
-                          <strong>
-                            {num(auto?.policy?.pressure_cutoff, 2)} bar
-                          </strong>
-                          <small>
-                            P{auto?.policy?.pressure_percentile} refitted on
-                            days 1–20
-                          </small>
-                        </p>
-                      </div>
-                      <div className="rule-line">
-                        <span>02</span>
-                        <p>
-                          Temperature below{" "}
-                          <strong>
-                            {num(auto?.policy?.temperature_cutoff, 2)} °C
-                          </strong>
-                          <br />
-                          or flow below{" "}
-                          <strong>
-                            {num(auto?.policy?.flow_cutoff, 2)} L/s
-                          </strong>
-                          <small>
-                            Confirmation from at least one second sensor
-                          </small>
-                        </p>
-                      </div>
-                      <div className="rule-line">
-                        <span>03</span>
-                        <p>
-                          Evidence persists for{" "}
-                          <strong>
-                            {auto?.policy?.consecutive} hourly sample(s)
-                          </strong>
-                          <small>
-                            Quality checks first; follow-up in 60 minutes
-                          </small>
-                        </p>
-                      </div>
-                      <div className="policy-fingerprint">
-                        <span>POLICY FINGERPRINT</span>
-                        <code>{report.policy_id}</code>
-                      </div>
-                    </section>
-                  </div>
-                  <section className="panel">
-                    <div className="panel-heading">
-                      <div>
-                        <h3>All 24 candidates</h3>
-                        <p>
-                          Fitted on calibration days; ranked on validation days.
-                          Full search history, including rejections.
-                        </p>
-                      </div>
-                      <span className="tag">
-                        Trial {report.selection.selected_trial} selected
-                      </span>
-                    </div>
-                    <div className="trial-grid">
-                      {report.selection.trials.map((t) => (
-                        <div
-                          key={t.id}
-                          className={`trial ${t.selected ? "winner" : ""}`}
-                        >
-                          <span>
-                            #{String(t.id).padStart(2, "0")}{" "}
-                            {t.selected && <CheckCircle2 size={14} />}
-                          </span>
-                          <strong>{t.name}</strong>
-                          <div>
+                      <div className="trial-grid">
+                        {report.selection.trials.map((t) => (
+                          <div
+                            key={t.id}
+                            className={`trial ${t.selected ? "winner" : ""}`}
+                          >
                             <span>
-                              Cost <b>{t.metrics.cost}</b>
+                              #{String(t.id).padStart(2, "0")}{" "}
+                              {t.selected && <CheckCircle2 size={14} />}
                             </span>
-                            <span>
-                              {t.metrics.true_positive}/{t.metrics.bad_hours}{" "}
-                              caught · {t.metrics.false_positive} false
-                            </span>
+                            <strong>{t.name}</strong>
+                            <div>
+                              <span>
+                                Cost <b>{t.metrics.cost}</b>
+                              </span>
+                              <span>
+                                {t.metrics.true_positive}/{t.metrics.bad_hours}{" "}
+                                caught · {t.metrics.false_positive} false
+                              </span>
+                            </div>
+                            <small>
+                              {t.selected ? "Selected & frozen" : t.action}
+                            </small>
                           </div>
-                          <small>
-                            {t.selected ? "Selected & frozen" : t.action}
-                          </small>
-                        </div>
-                      ))}
-                    </div>
-                  </section>
+                        ))}
+                      </div>
+                    </section>
+                  </details>
                 </>
               )}
 
@@ -906,7 +944,7 @@ function App() {
                 <span>Evidence before confidence.</span>
               </footer>
             </>
-          )}
+          ) : null}
         </div>
       </main>
     </div>
