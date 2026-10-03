@@ -1,49 +1,100 @@
-"""Tests for backend API — FastAPI TestClient.
+"""Tests for backend API endpoints.
 
 Owner: Div
-"""
 
+No network calls. Uses FastAPI TestClient, LLM_MODE=mock.
+"""
 import json
+import os
+
+# Force mock mode before importing app
+os.environ["LLM_MODE"] = "mock"
+os.environ["OPENROUTER_API_KEY"] = ""
+os.environ["OPENROUTER_MODEL"] = ""
 
 import pytest
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 
 from backend.main import app
-from backend.schemas import DecisionEvent, TickEvent, WellInfo
-
-pytestmark = pytest.mark.pending
+from backend.schemas import WellInfo
 
 client = TestClient(app)
 
 
-class TestWellsEndpoint:
-    def test_returns_list(self):
-        """GET /wells should return a list of WellInfo-shaped objects."""
-        resp = client.get("/wells")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert isinstance(data, list)
-        if len(data) > 0:
-            WellInfo(**data[0])  # must validate against schema
+def test_health():
+    r = client.get("/health")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["status"] == "ok"
+    assert data["llm_mode"] == "mock"
+    assert "has_seed" in data
 
 
-class TestStreamEndpoint:
-    def test_emits_valid_events(self):
-        """GET /stream/{instance_id}?cached=true should emit SSE events.
-
-        Each event should have a known type and valid JSON data.
-        """
-        valid_types = {"tick", "phase_marker", "watch_trigger",
-                       "tool_call", "tool_result", "decision"}
-        # In cached/mock mode this should return pre-recorded events
-        resp = client.get("/stream/WELL-00019_demo?cached=true", stream=True)
-        assert resp.status_code == 200
+def test_wells_schema():
+    r = client.get("/wells")
+    assert r.status_code == 200
+    wells = r.json()
+    assert isinstance(wells, list)
+    for w in wells:
+        WellInfo(**w)
 
 
-class TestResultsEndpoint:
-    def test_returns_systems(self):
-        """GET /results should return a dict with 'systems' list."""
-        resp = client.get("/results")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert "systems" in data
+def _parse_sse(text: str) -> list[dict]:
+    """Parse SSE text into events."""
+    events = []
+    current = {}
+    for line in text.replace("\r\n", "\n").split("\n"):
+        line = line.strip()
+        if line.startswith("event:"):
+            current["event"] = line.split(":", 1)[1].strip()
+        elif line.startswith("data:"):
+            current["data"] = line.split(":", 1)[1].strip()
+        elif line.startswith("id:"):
+            current["id"] = line.split(":", 1)[1].strip()
+        elif line == "" and current:
+            events.append(current)
+            current = {}
+    if current:
+        events.append(current)
+    return events
+
+
+def test_stream_seed():
+    """Stream seed with high speed and to_minute=5 — get ticks + phase_marker + end."""
+    with client.stream("GET", "/stream/seed?speed=6000&to_minute=5") as r:
+        assert r.status_code == 200
+        text = r.read().decode()
+
+    events = _parse_sse(text)
+    event_types = [e.get("event") for e in events]
+    assert "phase_marker" in event_types
+    assert "tick" in event_types
+    assert "end" in event_types
+
+
+def test_stream_unknown_404():
+    r = client.get("/stream/nonexistent_xyz_12345?speed=6000")
+    assert r.status_code == 404
+
+
+def test_results_mock_fallback():
+    r = client.get("/results")
+    assert r.status_code == 200
+    data = r.json()
+    assert "systems" in data
+    assert data.get("mock") is True
+
+
+def test_stream_record(tmp_path, monkeypatch):
+    """Record mode writes a .jsonl file."""
+    import backend.config
+    monkeypatch.setattr(backend.config, "DATA_DEMO", tmp_path)
+
+    with client.stream("GET", "/stream/seed?speed=6000&to_minute=3&record=true") as r:
+        assert r.status_code == 200
+        _ = r.read()
+
+    jsonl_files = list(tmp_path.glob("seed_*.jsonl"))
+    assert len(jsonl_files) >= 1
+    content = jsonl_files[0].read_text()
+    assert "tick" in content

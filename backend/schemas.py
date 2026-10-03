@@ -11,15 +11,31 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 
+# --- /health response ---
+
+
+class HealthResponse(BaseModel):
+    status: str
+    has_processed: bool
+    has_raw: bool
+    has_seed: bool
+    has_physics: bool
+    has_model: bool
+    llm_mode: str  # "openrouter" | "mock"
+    llm_model: str
+
+
 # --- /wells response ---
 
 
 class WellInfo(BaseModel):
     well_id: str
     instance_id: str
-    source: str  # "real" | "simulated" | "drawn"
+    source: str  # "real" | "simulated" | "drawn" | "seed"
     sensors_available: list[str]
     has_hydrate_event: bool
+    has_forming_phase: bool = False
+    n_minutes: int = 0
 
 
 # --- SSE event payloads ---
@@ -36,7 +52,7 @@ class TickEvent(BaseModel):
 
 class PhaseMarkerEvent(BaseModel):
     t: str
-    phase: str  # "forming" | "established"
+    phase: str  # "normal" | "forming" | "established"
 
 
 class WatchTriggerEvent(BaseModel):
@@ -84,6 +100,17 @@ class DecisionEvent(BaseModel):
     brief: str
 
 
+class ErrorEvent(BaseModel):
+    t: str
+    message: str
+
+
+class EndEvent(BaseModel):
+    t: str
+    total_minutes: int
+    instance_id: str
+
+
 # --- /results response ---
 
 
@@ -99,6 +126,7 @@ class SystemResult(BaseModel):
 
 class ResultsResponse(BaseModel):
     systems: list[SystemResult]
+    mock: bool = False
 
 
 # --- /tts request ---
