@@ -156,6 +156,8 @@ async def stream_well(
     agent: bool = Query(default=True),
     pause_on_agent: bool = Query(default=True),
     cache_only: bool = Query(default=False),
+    start: int = Query(default=0, ge=0),
+    delay_ms: int = Query(default=0, ge=0, le=2000),
 ):
     """SSE stream of tick/phase_marker/end events for a well instance."""
 
@@ -167,6 +169,21 @@ async def stream_well(
 
     inst = load_instance(instance_id)
     if inst is None:
+        # Fall back to Mico's scenario replay if this is a research scenario ID
+        found = scenarios().get(instance_id)
+        if found is not None:
+            start_frame = start or from_minute
+            if start_frame >= len(found["frames"]):
+                raise HTTPException(422, "Start exceeds replay length")
+            async def scenario_events():
+                for index, frame in enumerate(found["frames"][start_frame:], start_frame):
+                    tick = {"type": "tick", "t": frame["t"], "sensors": frame["sensors"], "ground_truth": frame["ground_truth"]}
+                    yield f"id: {index}\nevent: tick\ndata: {json.dumps(tick)}\n\n"
+                    yield f"event: decision\ndata: {json.dumps(frame)}\n\n"
+                    if speed < 6000:
+                        await asyncio.sleep(1.0 / speed)
+                yield 'event: complete\ndata: {"complete":true}\n\n'
+            return StreamingResponse(scenario_events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
         raise HTTPException(
             404,
             f"Instance '{instance_id}' not found. "
@@ -349,9 +366,9 @@ async def get_results() -> ResultsResponse:
 
 
 @app.post("/tts")
-async def text_to_speech(req: TTSRequest):
-    """TTS stub — the dashboard owner implements this."""
-    raise HTTPException(501, "TTS not implemented — dashboard owner's task")
+async def text_to_speech(req: TTSRequest = None):
+    """TTS stub — voice is not configured."""
+    raise HTTPException(503, "Voice is not configured. The dashboard provides the complete operator brief as text.")
 
 
 # ---------------------------------------------------------------------------
