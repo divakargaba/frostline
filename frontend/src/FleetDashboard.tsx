@@ -39,15 +39,37 @@ import {
 import type {
   AgentSource,
   FleetCatalog,
+  FleetCheck,
+  FleetCheckResult,
   FleetEvent,
   FleetFrame,
+  FleetMode,
   FleetRun,
+  FleetTimelineEvent,
   FleetWell,
+  FleetWorkflowReport,
   WellStatus,
 } from "./fleetTypes";
 import "./fleet.css";
 
 const SESSION_KEY = "frostline.fleet.session.v1";
+const SELECTED_WELL_KEY = "frostline.fleet.selectedWell.v1.";
+type OperatorAction =
+  "acknowledge" | "observation" | "complete" | "check" | "recheck";
+type CheckSubmission = {
+  check_id: string;
+  check_definition: string;
+  result: FleetCheckResult;
+  note?: string;
+};
+type ActionFeedback = {
+  wellId: string;
+  incidentId: string;
+  action: OperatorAction;
+  checkId?: string;
+  state: "saving" | "saved" | "error";
+  message: string;
+};
 const finished = (status?: string) =>
   ["completed", "cancelled", "failed"].includes(status || "");
 const stateNames: Record<WellStatus, string> = {
@@ -370,7 +392,7 @@ function FieldMap({
               left: `${positions[index % 4][0]}%`,
               top: `${positions[index % 4][1]}%`,
             }}
-            aria-label={`${well.name}: ${well.frames.length ? stateNames[well.status] : "awaiting replay"}. Select well`}
+            aria-label={`${well.name}: ${well.source_timestamp ? stateNames[well.status] : "awaiting first check"}. Select well`}
             aria-pressed={selected === well.id}
             onClick={() => onSelect(well.id)}
           >
@@ -379,15 +401,15 @@ function FieldMap({
             </span>
             {rank >= 0 &&
               well.status !== "normal" &&
-              well.frames.length > 0 && (
+              !!well.source_timestamp && (
                 <span className="fleet-rank">{rank + 1}</span>
               )}
             <span className="fleet-node-caption">
               <strong>{well.name}</strong>
               <small>
-                {well.frames.length
+                {well.source_timestamp
                   ? stateNames[well.status]
-                  : "Awaiting replay"}
+                  : "Awaiting first check"}
               </small>
             </span>
           </button>
@@ -507,16 +529,153 @@ function SensorChart({
   );
 }
 
+function IncidentProgress({ events }: { events: FleetTimelineEvent[] }) {
+  const milestones = [
+    ["detected", "Detected"],
+    ["seen", "Seen"],
+    ["checked", "Checked"],
+    ["recheck", "Recheck"],
+    ["recovered", "Recovered"],
+  ];
+  return (
+    <div className="fleet-incident-progress">
+      <span>THIS INCIDENT · SOURCE TIME</span>
+      <ol className="fleet-milestones">
+        {milestones.map(([kind, label]) => {
+          const event = [...events]
+            .reverse()
+            .find((item) => item.kind === kind);
+          return (
+            <li
+              key={kind}
+              className={event ? "done" : ""}
+              title={
+                event
+                  ? `${event.summary} · ${time(event.at)}`
+                  : `${label}: not recorded`
+              }
+            >
+              <i className="fleet-milestone-dot">
+                {event && <Check size={8} />}
+              </i>
+              <strong>{label}</strong>
+              <time dateTime={event?.at}>
+                {event?.at ? event.at.slice(11, 16) : "—"}
+              </time>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
+function OperatorCheckTask({
+  task,
+  busy,
+  saving,
+  onSave,
+}: {
+  task: FleetCheck;
+  busy: boolean;
+  saving: boolean;
+  onSave: (submission: CheckSubmission) => void;
+}) {
+  const [result, setResult] = useState(task.status);
+  const [checkNote, setCheckNote] = useState(task.note || "");
+  const labels = {
+    confirmed: "Confirmed",
+    not_confirmed: "Not confirmed",
+    unavailable: "Unable to check",
+  };
+  const changed =
+    result !== task.status || checkNote.trim() !== (task.note || "").trim();
+  return (
+    <div className="fleet-check-task">
+      <h4>{task.label}</h4>
+      <p>{task.reason}</p>
+      <div className="fleet-check-fields">
+        <select
+          aria-label={`Result: ${task.label}`}
+          value={result}
+          disabled={busy}
+          onChange={(event) =>
+            setResult(event.target.value as FleetCheck["status"])
+          }
+        >
+          <option value="pending" disabled>
+            Choose a finding
+          </option>
+          <option value="confirmed">Confirmed</option>
+          <option value="not_confirmed">Not confirmed</option>
+          <option value="unavailable">Unable to check</option>
+        </select>
+        <button
+          className="fleet-button"
+          disabled={busy || result === "pending" || !changed}
+          onClick={() => {
+            if (result !== "pending")
+              onSave({
+                check_id: task.id,
+                check_definition: task.definition,
+                result,
+                ...(checkNote.trim() ? { note: checkNote.trim() } : {}),
+              });
+          }}
+        >
+          {saving ? (
+            <LoaderCircle size={12} className="spin" />
+          ) : (
+            <Check size={12} />
+          )}
+          {saving ? "Saving…" : "Save"}
+        </button>
+      </div>
+      <details className="fleet-check-note">
+        <summary>Optional finding note</summary>
+        <input
+          aria-label={`Note: ${task.label}`}
+          value={checkNote}
+          disabled={busy}
+          onChange={(event) => setCheckNote(event.target.value)}
+          maxLength={500}
+          placeholder="What did you find?"
+        />
+      </details>
+      {task.status !== "pending" && (
+        <p className="fleet-check-saved" role="status">
+          <CheckCheck size={11} /> {labels[task.status]} saved
+          {task.updated_at
+            ? ` · ${new Date(task.updated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} local time`
+            : ""}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export default function FleetDashboard() {
   const [catalog, setCatalog] = useState<FleetCatalog | null>(null);
   const [run, setRun] = useState<FleetRun | null>(null);
   const [sessionId, setSessionId] = useState(() =>
     localStorage.getItem(SESSION_KEY),
   );
-  const [selected, setSelected] = useState("WELL-00001");
-  const [speed, setSpeed] = useState(60);
+  const [selected, setSelected] = useState(() => {
+    const saved = sessionId
+      ? localStorage.getItem(`${SELECTED_WELL_KEY}${sessionId}`)
+      : null;
+    return fallbackWells.some((well) => well.id === saved)
+      ? saved!
+      : "WELL-00001";
+  });
+  const [speed, setSpeed] = useState(12);
+  const [mode, setMode] = useState<FleetMode>("guided");
   const [connected, setConnected] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [actionFeedback, setActionFeedback] = useState<ActionFeedback | null>(
+    null,
+  );
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [sheet, setSheet] = useState<"evidence" | "fault" | null>(null);
@@ -524,13 +683,18 @@ export default function FleetDashboard() {
   const [note, setNote] = useState("");
   const lastEvent = useRef(-1);
   const source = useRef<EventSource | null>(null);
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
   useEffect(() => {
     api<FleetCatalog>("/catalog")
       .then((value) => {
         setCatalog(value);
         // A reconnecting session owns its speed; a later catalog response must
         // not overwrite the value already restored from the server.
-        if (!sessionId) setSpeed(value.default_speed);
+        if (!sessionId) {
+          setSpeed(value.default_speed);
+          setMode(value.default_mode || "guided");
+        }
       })
       .catch((e) => setError(e.message));
   }, []);
@@ -539,6 +703,11 @@ export default function FleetDashboard() {
     const timer = setTimeout(() => setNotice(""), 6000);
     return () => clearTimeout(timer);
   }, [notice]);
+  useEffect(() => {
+    if (sessionId && fallbackWells.some((well) => well.id === selected)) {
+      localStorage.setItem(`${SELECTED_WELL_KEY}${sessionId}`, selected);
+    }
+  }, [sessionId, selected]);
   useEffect(() => {
     setObserving(false);
     setNote("");
@@ -552,12 +721,15 @@ export default function FleetDashboard() {
       lastEvent.current = next.last_event_id;
       setRun(next);
       setSpeed(next.speed);
+      setMode(next.mode || "continuous");
     };
     const resetMissing = () => {
       if (disposed) return;
       source.current?.close();
       localStorage.removeItem(SESSION_KEY);
+      localStorage.removeItem(`${SELECTED_WELL_KEY}${sessionId}`);
       setSessionId(null);
+      setSelected("WELL-00001");
       setRun(null);
       setConnected(false);
       setNotice("The server restarted. Start a new field replay.");
@@ -616,6 +788,8 @@ export default function FleetDashboard() {
     if (next.id !== run?.id || next.last_event_id >= lastEvent.current) {
       lastEvent.current = next.last_event_id;
       setRun(next);
+      setSpeed(next.speed);
+      setMode(next.mode || "continuous");
     }
   };
   async function command(action: string, extra: object = {}) {
@@ -638,6 +812,8 @@ export default function FleetDashboard() {
   async function start() {
     if (busy) return;
     setBusy(true);
+    setStarting(true);
+    setActionFeedback(null);
     setError("");
     source.current?.close();
     try {
@@ -645,13 +821,10 @@ export default function FleetDashboard() {
         await api<FleetRun>(`/sessions/${run.id}/control`, {
           action: "cancel",
         });
-      let next = await api<FleetRun>("/sessions", { speed });
-      if (next.status === "paused")
-        next = await api<FleetRun>(`/sessions/${next.id}/control`, {
-          action: "resume",
-        });
+      const next = await api<FleetRun>("/sessions", { speed, mode });
       lastEvent.current = next.last_event_id;
       setRun(next);
+      setSelected("WELL-00001");
       setSessionId(next.id);
       localStorage.setItem(SESSION_KEY, next.id);
       setNotice("");
@@ -659,32 +832,71 @@ export default function FleetDashboard() {
       setError((e as Error).message);
     } finally {
       setBusy(false);
+      setStarting(false);
     }
   }
   async function incidentAction(
-    action: "acknowledge" | "observation" | "complete",
+    action: OperatorAction,
+    check?: CheckSubmission,
   ) {
     if (!sessionId || busy) return;
+    const targetWell = selected;
+    const incidentId = run?.wells.find((item) => item.id === targetWell)
+      ?.incident?.id;
+    if (!incidentId) return;
+    const target = {
+      wellId: targetWell,
+      incidentId,
+      action,
+      checkId: check?.check_id,
+    };
     setBusy(true);
     setError("");
+    setActionFeedback({
+      ...target,
+      state: "saving",
+      message:
+        action === "recheck"
+          ? "Requesting an evidence check…"
+          : "Saving your review…",
+    });
     try {
-      accept(
-        await api<FleetRun>(
-          `/sessions/${sessionId}/incidents/${selected}/actions`,
-          { action, ...(note.trim() ? { note: note.trim() } : {}) },
-        ),
+      const next = await api<FleetRun>(
+        `/sessions/${sessionId}/incidents/${targetWell}/actions`,
+        {
+          action,
+          incident_id: incidentId,
+          ...(check ||
+            (["observation", "complete"].includes(action) && note.trim()
+              ? { note: note.trim() }
+              : {})),
+        },
       );
-      setNotice(
-        action === "acknowledge"
-          ? "Acknowledged. The agent continues monitoring this well."
-          : action === "complete"
-            ? "Review marked complete. Monitoring remains active."
-            : "Observation recorded for the next assessment.",
-      );
-      setObserving(false);
-      setNote("");
+      accept(next);
+      const message =
+        action === "recheck"
+          ? "Evidence check requested. Monitoring status below shows its progress."
+          : action === "check"
+            ? "Finding saved. Sensor status is assessed separately."
+            : action === "observation"
+              ? "Observation saved to this run."
+              : action === "complete"
+                ? "Your review is recorded. Sensor status is assessed separately."
+                : "Acknowledgment saved. The concern remains open.";
+      setActionFeedback({ ...target, state: "saved", message });
+      if (
+        selectedRef.current === targetWell &&
+        ["observation", "complete", "acknowledge"].includes(action)
+      ) {
+        setObserving(false);
+        setNote("");
+      }
     } catch (e) {
-      setError((e as Error).message);
+      setActionFeedback({
+        ...target,
+        state: "error",
+        message: `${action === "recheck" ? "Could not request the check." : "Could not save your review."} ${(e as Error).message}`,
+      });
     } finally {
       setBusy(false);
     }
@@ -703,8 +915,110 @@ export default function FleetDashboard() {
   const running = run?.status === "running";
   const paused = run?.status === "paused";
   const preparing = run?.status === "preparing";
+  const guided = mode === "guided";
+  const guidePhase = run?.guide?.phase;
+  const checkpoint = run?.guide?.checkpoint;
+  const guideAssessing = guided && running && guidePhase === "assessing";
+  const continueLabel =
+    guidePhase === "overview" ? "Next important moment" : "Continue demo";
+  const currentFeedback =
+    actionFeedback?.wellId === well.id &&
+    actionFeedback.incidentId === well.incident?.id
+      ? actionFeedback
+      : null;
+  const savingAction =
+    currentFeedback?.state === "saving" ? currentFeedback.action : null;
+  const reviewSaved =
+    !!well.incident &&
+    (well.incident.acknowledged ||
+      well.incident.completed ||
+      well.incident.condition_cleared);
+  const reviewTitle = well.incident?.condition_cleared
+    ? "Readings recovered"
+    : well.incident?.completed
+      ? "Your review is recorded"
+      : "Acknowledgment saved";
+  const reviewDetail = well.incident?.condition_cleared
+    ? "The previous incident remains in the evidence record."
+    : well.incident?.completed
+      ? "The concern stays open until the sensor evidence recovers."
+      : "The concern is still open. After checking the evidence, add what you found.";
+  const nextMinutes =
+    well.next_check && well.source_timestamp
+      ? Math.max(
+          0,
+          Math.ceil(
+            (Date.parse(well.next_check) - Date.parse(well.source_timestamp)) /
+              60_000,
+          ),
+        )
+      : null;
+  const monitoring = !run
+    ? {
+        title: "Ready to monitor",
+        detail: "Start the replay to read and assess all four wells.",
+      }
+    : finished(run.status)
+      ? {
+          title:
+            run.status === "failed" ? "Replay interrupted" : "Replay ended",
+          detail:
+            "No new readings or checks are running. Start a new replay to continue.",
+        }
+      : preparing
+        ? {
+            title: "Loading the recordings",
+            detail: "Monitoring starts when the four feeds are ready.",
+          }
+        : !connected
+          ? {
+              title: "Reconnecting to the replay",
+              detail:
+                "Showing the last received state. Monitoring status will update after reconnection.",
+            }
+          : well.investigation === "running"
+            ? {
+                title: "Reviewing current evidence",
+                detail: paused
+                  ? `This check is finishing. New readings and checks wait for ${guided ? "Continue demo" : "Resume"}.`
+                  : well.activity,
+              }
+            : paused
+              ? {
+                  title: guided
+                    ? "Historical readings are paused"
+                    : "Automatic checks are paused",
+                  detail:
+                    well.investigation === "queued"
+                      ? guided
+                        ? "A review is queued. Continue demo checks the current evidence before moving on."
+                        : "A review is queued. Resume the replay to run it and read new data."
+                      : guided
+                        ? "Take time to read and record your findings. Continue demo advances to the next important moment."
+                        : "Resume the replay to receive new readings and continue checking this well.",
+                }
+              : well.investigation === "queued"
+                ? {
+                    title: guideAssessing
+                      ? "Current-reading check queued"
+                      : "Assessment queued",
+                    detail: guideAssessing
+                      ? "Historical readings are held while the current evidence is checked. The demo pauses when the review finishes."
+                      : "Sensor monitoring continues while this well waits for review.",
+                  }
+                : {
+                    title: guideAssessing
+                      ? "Current reading held for review"
+                      : "Monitoring each new reading",
+                    detail: guideAssessing
+                      ? "The field review is finishing before the demo pauses. No new readings are advancing."
+                      : nextMinutes != null && Number.isFinite(nextMinutes)
+                        ? `Next automatic review in ${nextMinutes || 1} data ${nextMinutes === 1 || nextMinutes === 0 ? "minute" : "minutes"}.`
+                        : "Changes in the sensor evidence trigger another review.",
+                  };
   const liveConfigured =
     run?.llm_configured ?? catalog?.llm_configured ?? false;
+  const llmDeferred = run?.llm_deferred ?? catalog?.llm_deferred ?? false;
   const readyModel = run?.model_ready ?? catalog?.model_ready ?? false;
   const agentSource = well.assessment?.source || run?.agent_mode || "rules";
   const attention = wells.filter(
@@ -730,14 +1044,50 @@ export default function FleetDashboard() {
   const headerStatus = preparing
     ? "Preparing the field replay"
     : paused
-      ? "Replay paused"
+      ? guided
+        ? "Your field, at your pace."
+        : "Historical replay paused"
       : running
-        ? "Monitoring four wells"
+        ? guided
+          ? guideAssessing
+            ? "Checking the evidence"
+            : "Finding the next change"
+          : "Monitoring four wells"
         : run?.status === "failed"
           ? "Field replay interrupted"
           : finished(run?.status)
             ? "Field replay complete"
             : "Your field, in focus.";
+  const checkpointWell = wells.find((item) => item.id === checkpoint?.well_id);
+  const visibleCheckpoint = ["checkpoint", "ended"].includes(guidePhase || "")
+    ? checkpoint
+    : null;
+  const guideTitle = preparing
+    ? "Preparing your walkthrough"
+    : !run || guidePhase === "overview"
+      ? "Explore the field first"
+      : running
+        ? guideAssessing
+          ? "Checking current evidence"
+          : "Finding the next important moment"
+        : visibleCheckpoint?.title ||
+          (finished(run.status)
+            ? "End of the recording"
+            : "Take your time to review");
+  const guideSummary = preparing
+    ? "Loading the four recordings and their prior history."
+    : !run
+      ? "Start with the overview. Then move between real changes, with time to review each one."
+      : guidePhase === "overview"
+        ? "Charts show prior history. Current readings have not been assessed yet. Choose Next important moment to begin."
+        : running
+          ? guideAssessing
+            ? "The current readings are being checked. The replay pauses when the assessment is ready."
+            : "Reading every intervening minute in order. The replay pauses after the next meaningful change is assessed."
+          : visibleCheckpoint?.summary ||
+            (finished(run.status)
+              ? "No more historical readings will arrive. You can still inspect the evidence and record findings."
+              : "New historical readings are paused. Continue when you are ready.");
   return (
     <section
       className="fleet-dashboard"
@@ -752,40 +1102,72 @@ export default function FleetDashboard() {
           </p>
         </div>
         <div className="fleet-controls">
-          <select
-            aria-label="Replay speed"
-            value={speed}
-            disabled={busy || preparing}
-            onChange={(event) => {
-              const value = Number(event.target.value);
-              setSpeed(value);
-              if (active) void command("speed", { speed: value });
-            }}
+          <div
+            className="fleet-mode-picker"
+            role="group"
+            aria-label="Replay mode"
           >
-            {(catalog?.speeds || [30, 60, 120]).map((value) => (
-              <option key={value} value={value}>
-                {value}× speed
-              </option>
+            {(["guided", "continuous"] as FleetMode[]).map((value) => (
+              <button
+                key={value}
+                aria-pressed={mode === value}
+                disabled={busy || preparing}
+                onClick={() => {
+                  if (mode === value) return;
+                  if (active) void command("mode", { mode: value });
+                  else setMode(value);
+                }}
+              >
+                {value === "guided" ? "Guided demo" : "Continuous replay"}
+              </button>
             ))}
-          </select>
+          </div>
+          {!guided && (
+            <select
+              aria-label="Replay pace"
+              value={speed}
+              disabled={busy || preparing}
+              onChange={(event) => {
+                const value = Number(event.target.value);
+                if (active) void command("speed", { speed: value });
+                else setSpeed(value);
+              }}
+            >
+              {(catalog?.speeds || [12, 30, 60, 120]).map((value) => (
+                <option key={value} value={value}>
+                  {value === 12
+                    ? "Comfortable · 1 reading / 5s"
+                    : value === 30
+                      ? "Faster · 1 data min / 2s"
+                      : value === 60
+                        ? "Fast · 1 data min / 1s"
+                        : "Fastest · 1 data min / 0.5s"}
+                </option>
+              ))}
+            </select>
+          )}
           {!active ? (
             <button
               className="fleet-button primary"
               onClick={() => void start()}
               disabled={busy || !catalog}
             >
-              {busy ? (
+              {starting ? (
                 <LoaderCircle size={15} className="spin" />
               ) : (
                 <Play size={15} />
               )}
-              Start field replay
+              {guided ? "Start walkthrough" : "Start field replay"}
             </button>
           ) : (
             <button
               className="fleet-button primary"
               disabled={busy || preparing}
-              onClick={() => void command(running ? "pause" : "resume")}
+              onClick={() =>
+                void command(
+                  running ? "pause" : guided ? "next_moment" : "resume",
+                )
+              }
             >
               {preparing ? (
                 <LoaderCircle size={15} className="spin" />
@@ -794,17 +1176,25 @@ export default function FleetDashboard() {
               ) : (
                 <Play size={15} />
               )}{" "}
-              {preparing ? "Preparing…" : running ? "Pause" : "Resume"}
+              {preparing
+                ? "Preparing…"
+                : running
+                  ? guided
+                    ? "Stop scanning"
+                    : "Pause"
+                  : guided
+                    ? continueLabel
+                    : "Resume"}
             </button>
           )}
           <button
-            className="fleet-button icon"
-            aria-label="Advance one replay step"
-            title="Advance one replay step"
+            className="fleet-button"
+            title="Read one more historical minute, then pause"
             disabled={busy || !paused}
             onClick={() => void command("step")}
           >
             <SkipForward size={15} />
+            Read 1 minute
           </button>
           {run && (
             <button
@@ -836,6 +1226,64 @@ export default function FleetDashboard() {
             <X size={15} />
           </button>
         </div>
+      )}
+      {guided && (
+        <section
+          className={`fleet-guide-banner ${running ? "scanning" : ""}`}
+          aria-label="Guided replay status"
+          aria-live="polite"
+        >
+          <div className="fleet-guide-icon">
+            {preparing || running ? (
+              <LoaderCircle size={20} className="spin" />
+            ) : finished(run?.status) ? (
+              <CheckCheck size={20} />
+            ) : (
+              <Pause size={20} />
+            )}
+          </div>
+          <div className="fleet-guide-copy">
+            <div className="fleet-eyebrow">
+              {!run
+                ? "GUIDED HISTORICAL REPLAY"
+                : preparing
+                  ? "PREPARING HISTORICAL REPLAY"
+                  : running
+                    ? guideAssessing
+                      ? "HISTORICAL REPLAY · CHECKING EVIDENCE"
+                      : "HISTORICAL REPLAY · ADVANCING"
+                    : finished(run.status)
+                      ? "HISTORICAL REPLAY ENDED"
+                      : "HISTORICAL REPLAY PAUSED"}
+            </div>
+            <h2>{guideTitle}</h2>
+            <p>{guideSummary}</p>
+            {paused && pending > 0 && (
+              <small>
+                A review is queued. Continue demo checks the current evidence
+                first.
+              </small>
+            )}
+            {visibleCheckpoint?.source_timestamp && (
+              <small>
+                {checkpointWell?.name ? `${checkpointWell.name} · ` : ""}
+                {time(visibleCheckpoint.source_timestamp)} source time
+              </small>
+            )}
+          </div>
+          {visibleCheckpoint?.well_id && checkpointWell && (
+            <button
+              className="fleet-button"
+              disabled={selected === visibleCheckpoint.well_id}
+              onClick={() => setSelected(visibleCheckpoint.well_id!)}
+            >
+              {selected === visibleCheckpoint.well_id
+                ? `Viewing ${checkpointWell.name}`
+                : `View ${checkpointWell.name}`}
+              <ArrowRight size={13} />
+            </button>
+          )}
+        </section>
       )}
       <div className="fleet-kpis">
         <Kpi
@@ -881,9 +1329,11 @@ export default function FleetDashboard() {
                   Trends
                 </h2>
                 <small>
-                  {well.frames.length
+                  {well.source_timestamp
                     ? `Latest reading · ${time(well.source_timestamp)} · source time`
-                    : "Select a well on the map to follow its readings."}
+                    : well.frames.length
+                      ? "Prior history · replay readings have not started"
+                      : "Select a well on the map to follow its readings."}
                 </small>
               </div>
               <button
@@ -965,9 +1415,9 @@ export default function FleetDashboard() {
                     <span className="fleet-queue-copy">
                       <strong>{item.name}</strong>
                       <small>
-                        {item.frames.length
+                        {item.source_timestamp
                           ? stateNames[item.status]
-                          : "Awaiting replay"}
+                          : "Awaiting first check"}
                         {item.incident?.acknowledged &&
                         !item.incident.completed &&
                         !item.incident.condition_cleared
@@ -976,7 +1426,9 @@ export default function FleetDashboard() {
                       </small>
                     </span>
                     <span className="fleet-queue-state">
-                      {item.investigation === "running" ? (
+                      {active &&
+                      connected &&
+                      item.investigation === "running" ? (
                         <LoaderCircle size={13} className="spin" />
                       ) : (
                         <ChevronRight size={13} />
@@ -991,17 +1443,17 @@ export default function FleetDashboard() {
             <div className="fleet-assessment">
               <div className="fleet-eyebrow">
                 <Sparkles size={12} />
-                {well.name} · AGENT ASSESSMENT
+                {well.name} · EVIDENCE REVIEW
               </div>
               <span className={`fleet-status ${well.status}`}>
                 <i className={`fleet-dot ${well.status}`} />
-                {well.frames.length
+                {well.source_timestamp
                   ? stateNames[well.status]
-                  : "Ready to monitor"}
+                  : "Awaiting first check"}
               </span>
               <h3>
                 {well.assessment?.summary ||
-                  (well.investigation === "running"
+                  (active && connected && well.investigation === "running"
                     ? "Investigating the latest readings…"
                     : "Waiting for the first readings.")}
               </h3>
@@ -1023,44 +1475,98 @@ export default function FleetDashboard() {
                     : "Start the replay. The agent will check each well and surface what needs your attention."}
                 </p>
               )}
+              {!!well.timeline?.length && (
+                <IncidentProgress events={well.timeline} />
+              )}
               <div className="fleet-next-step">
                 <span>NEXT OPERATOR STEP</span>
                 <p>
                   {well.assessment?.next_step ||
-                    "No action yet. Monitoring starts with the replay."}
+                    (guided && guidePhase === "overview"
+                      ? "Choose Next important moment when you are ready to begin."
+                      : "No action yet. Monitoring starts with the replay.")}
                 </p>
-                <div className="fleet-actions">
-                  <button
-                    className="fleet-button primary"
-                    disabled={
-                      busy ||
-                      !well.incident ||
-                      well.incident.acknowledged ||
-                      well.incident.completed ||
-                      well.incident.condition_cleared
-                    }
-                    onClick={() => void incidentAction("acknowledge")}
+                {well.incident && (
+                  <div className="fleet-actions" aria-busy={!!savingAction}>
+                    <button
+                      className="fleet-button primary"
+                      disabled={
+                        busy ||
+                        !well.incident ||
+                        well.incident.acknowledged ||
+                        well.incident.completed ||
+                        well.incident.condition_cleared
+                      }
+                      aria-describedby={`review-help-${well.id}`}
+                      onClick={() => void incidentAction("acknowledge")}
+                    >
+                      {savingAction === "acknowledge" ? (
+                        <LoaderCircle size={13} className="spin" />
+                      ) : well.incident?.acknowledged ||
+                        well.incident?.completed ? (
+                        <CheckCheck size={13} />
+                      ) : (
+                        <Check size={13} />
+                      )}{" "}
+                      {savingAction === "acknowledge"
+                        ? "Saving acknowledgment…"
+                        : well.incident?.condition_cleared
+                          ? "Recovered"
+                          : well.incident?.completed
+                            ? "Review recorded"
+                            : well.incident?.acknowledged
+                              ? "Acknowledged"
+                              : currentFeedback?.state === "error" &&
+                                  currentFeedback.action === "acknowledge"
+                                ? "Try acknowledgment again"
+                                : "Acknowledge alert"}
+                    </button>
+                    <button
+                      className={`fleet-button ${reviewSaved ? "primary" : ""}`}
+                      disabled={busy || !well.incident}
+                      onClick={() => setObserving(!observing)}
+                    >
+                      <MessageSquare size={12} />
+                      Add observation
+                    </button>
+                  </div>
+                )}
+                {well.incident && (
+                  <div
+                    id={`review-help-${well.id}`}
+                    className={`fleet-review-feedback ${reviewSaved ? "saved" : ""}`}
+                    role="status"
+                    aria-live="polite"
+                    aria-atomic="true"
                   >
-                    {well.incident?.acknowledged ? (
-                      <CheckCheck size={13} />
+                    {savingAction === "acknowledge" ? (
+                      <span>Recording that you have seen this alert…</span>
+                    ) : reviewSaved ? (
+                      <>
+                        <strong>
+                          <CheckCheck size={13} /> {reviewTitle}
+                        </strong>
+                        <span>{reviewDetail}</span>
+                      </>
                     ) : (
-                      <Check size={13} />
-                    )}{" "}
-                    {well.incident?.condition_cleared
-                      ? "Recovered"
-                      : well.incident?.acknowledged
-                        ? "Acknowledged"
-                        : "Acknowledge"}
-                  </button>
-                  <button
-                    className="fleet-button"
-                    disabled={busy || !well.incident}
-                    onClick={() => setObserving(!observing)}
-                  >
-                    <MessageSquare size={12} />
-                    Add observation
-                  </button>
-                </div>
+                      <span>
+                        Acknowledge means “I’ve seen this alert.” The sensor
+                        checks run independently.
+                      </span>
+                    )}
+                  </div>
+                )}
+                {currentFeedback?.state === "error" && (
+                  <p className="fleet-action-error" role="alert">
+                    {currentFeedback.message}
+                  </p>
+                )}
+                {currentFeedback?.state === "saved" &&
+                  ["observation", "check"].includes(currentFeedback.action) && (
+                    <p className="fleet-action-saved" role="status">
+                      {currentFeedback.message}
+                    </p>
+                  )}
                 {observing && (
                   <div className="fleet-observation">
                     <label htmlFor="fleet-observation">
@@ -1079,29 +1585,151 @@ export default function FleetDashboard() {
                         disabled={busy || !note.trim()}
                         onClick={() => void incidentAction("observation")}
                       >
-                        Record observation
+                        {savingAction === "observation" && (
+                          <LoaderCircle size={12} className="spin" />
+                        )}
+                        {savingAction === "observation"
+                          ? "Saving observation…"
+                          : "Record observation"}
                       </button>
                       <button
                         className="fleet-button"
                         disabled={busy}
                         onClick={() => void incidentAction("complete")}
                       >
-                        Complete review
+                        {savingAction === "complete" && (
+                          <LoaderCircle size={12} className="spin" />
+                        )}
+                        {savingAction === "complete"
+                          ? "Saving review…"
+                          : "Complete review"}
                       </button>
                     </div>
+                    <p className="fleet-review-help">
+                      Completing your review records your check. The alert
+                      follows the sensor evidence.
+                    </p>
                   </div>
                 )}
-                <div className="fleet-recheck">
-                  <Clock3 size={11} />
-                  {well.investigation === "queued"
-                    ? paused
-                      ? "Assessment queued · resumes with replay"
-                      : "Assessment queued"
-                    : well.next_check
-                      ? `Next check · ${time(well.next_check)} · source time`
-                      : well.investigation === "running"
-                        ? "Investigation in progress"
-                        : "Rechecks are scheduled by the agent"}
+                {!!well.incident && !!well.assessment?.checks?.length && (
+                  <details
+                    className="fleet-checklist"
+                    key={`${well.id}-${well.incident.id}`}
+                  >
+                    <summary>
+                      Operator checks{" "}
+                      <span>
+                        {
+                          well.assessment.checks.filter(
+                            (task) => task.status !== "pending",
+                          ).length
+                        }{" "}
+                        / {well.assessment.checks.length} saved
+                      </span>
+                    </summary>
+                    <div className="fleet-checklist-body">
+                      <p className="fleet-review-help">
+                        Record what you verified. Findings inform the review;
+                        measured conditions determine the alert.
+                      </p>
+                      {well.assessment.checks.map((task) => (
+                        <OperatorCheckTask
+                          key={`${task.id}-${task.definition}-${task.updated_at || "pending"}`}
+                          task={task}
+                          busy={busy}
+                          saving={
+                            savingAction === "check" &&
+                            currentFeedback?.checkId === task.id
+                          }
+                          onSave={(submission) =>
+                            void incidentAction("check", submission)
+                          }
+                        />
+                      ))}
+                    </div>
+                  </details>
+                )}
+                <div
+                  className={`fleet-follow-up ${paused ? "paused" : ""}`}
+                  aria-label="Automatic monitoring status"
+                >
+                  <strong>
+                    {active && connected && well.investigation === "running" ? (
+                      <LoaderCircle size={14} className="spin" />
+                    ) : paused ? (
+                      <Pause size={14} />
+                    ) : (
+                      <Clock3 size={14} />
+                    )}
+                    {monitoring.title}
+                  </strong>
+                  <p>{monitoring.detail}</p>
+                  {well.followup?.last_checked_at && (
+                    <div className="fleet-followup-change">
+                      <p>{well.followup.change_summary}</p>
+                      <small>
+                        Last checked · {time(well.followup.last_checked_at)}{" "}
+                        source time
+                      </small>
+                    </div>
+                  )}
+                  {running &&
+                    connected &&
+                    well.investigation !== "running" &&
+                    well.investigation !== "queued" && (
+                      <small>Each replay step advances one data minute.</small>
+                    )}
+                  <div className="fleet-followup-actions">
+                    {paused && (
+                      <button
+                        className="fleet-button"
+                        disabled={busy}
+                        onClick={() =>
+                          void command(guided ? "next_moment" : "resume")
+                        }
+                      >
+                        <Play size={12} />{" "}
+                        {guided ? continueLabel : "Resume automatic checks"}
+                      </button>
+                    )}
+                    {well.incident && (
+                      <button
+                        className="fleet-button"
+                        disabled={
+                          busy ||
+                          !active ||
+                          preparing ||
+                          !connected ||
+                          ["running", "queued"].includes(well.investigation)
+                        }
+                        title={
+                          !active
+                            ? "Start a new replay to run another evidence check."
+                            : paused
+                              ? `Queues an evidence check for when you ${guided ? "continue the demo" : "resume"}.`
+                              : "Request a new review of the available evidence."
+                        }
+                        onClick={() => void incidentAction("recheck")}
+                      >
+                        {savingAction === "recheck" ? (
+                          <LoaderCircle size={12} className="spin" />
+                        ) : (
+                          <RotateCcw size={12} />
+                        )}
+                        {savingAction === "recheck"
+                          ? "Requesting…"
+                          : paused
+                            ? "Queue recheck"
+                            : "Recheck now"}
+                      </button>
+                    )}
+                  </div>
+                  {currentFeedback?.state === "saved" &&
+                    currentFeedback.action === "recheck" && (
+                      <p className="fleet-action-saved" role="status">
+                        {currentFeedback.message}
+                      </p>
+                    )}
                 </div>
               </div>
               <div className="fleet-agent-status">
@@ -1121,7 +1749,15 @@ export default function FleetDashboard() {
               </div>
             </div>
           </div>
-          {!liveConfigured ? (
+          {llmDeferred ? (
+            <div className="fleet-mode-notice">
+              <ShieldCheck size={13} />
+              <span>
+                Automatic evidence checks are active. LLM investigations are
+                deferred.
+              </span>
+            </div>
+          ) : !liveConfigured ? (
             <div className="fleet-mode-notice">
               <Unplug size={13} />
               <span>
@@ -1154,7 +1790,7 @@ export default function FleetDashboard() {
           {preparing
             ? run?.readiness_message
             : run
-              ? `${connected ? "Feed connected" : paused ? "Replay paused" : finished(run.status) ? "Replay finished" : "Connecting to feed"} · ${run.requests_used} / ${run.request_budget} LLM requests`
+              ? `${paused ? "Historical replay paused" : finished(run.status) ? "Historical replay finished" : connected ? (guideAssessing ? "Checking current evidence" : "Replay feed connected") : "Connecting to replay"} · ${llmDeferred ? "Model + rules · LLM deferred" : `${run.requests_used} / ${run.request_budget} LLM requests`}`
               : "Historical replay · assessments computed during the run"}
         </span>
         <div className="fleet-bottom-actions">
@@ -1197,7 +1833,92 @@ export default function FleetDashboard() {
                 </li>
               ))}
             </ul>
+            {(well.assessment?.category ||
+              !!well.assessment?.alternatives?.length) && (
+              <details className="fleet-sensor-details">
+                <summary>Assessment context</summary>
+                {well.assessment.category && (
+                  <p>
+                    Working category:{" "}
+                    {well.assessment.category.replaceAll("_", " ")}. This is a
+                    review hypothesis, not a confirmed diagnosis.
+                  </p>
+                )}
+                {!!well.assessment.alternatives?.length && (
+                  <ul className="fleet-evidence-list">
+                    {well.assessment.alternatives.map((alternative, index) => (
+                      <li key={index}>{alternative}</li>
+                    ))}
+                  </ul>
+                )}
+              </details>
+            )}
           </section>
+          {well.followup?.after && (
+            <section>
+              <h3>Latest evidence check</h3>
+              <p>{well.followup.change_summary}</p>
+              <p>
+                Trigger: {well.followup.trigger || "Scheduled evidence review"}
+              </p>
+              <div className="fleet-evidence-change">
+                {[
+                  { label: "Before", snapshot: well.followup.before },
+                  { label: "After", snapshot: well.followup.after },
+                ].map(({ label, snapshot }) => (
+                  <div key={label}>
+                    <span>{label}</span>
+                    {snapshot ? (
+                      <>
+                        <time dateTime={snapshot.at}>
+                          {snapshot.at} · source time
+                        </time>
+                        <strong>{stateNames[snapshot.status]}</strong>
+                        <p>{snapshot.summary}</p>
+                        <ul>
+                          {snapshot.evidence.map((item, index) => (
+                            <li key={index}>{item}</li>
+                          ))}
+                        </ul>
+                      </>
+                    ) : (
+                      <p>No earlier assessment in this run.</p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+          {!!well.timeline?.length && (
+            <section>
+              <details className="fleet-sensor-details">
+                <summary>
+                  Incident history · {well.timeline.length} recorded events
+                </summary>
+                <p>
+                  Times show when actions or checks occurred in the source
+                  replay. An acknowledgment does not trigger a sensor check.
+                </p>
+                <ol className="fleet-history-list">
+                  {well.timeline.map((event) => (
+                    <li key={event.id}>
+                      <strong>
+                        {event.kind === "seen"
+                          ? "Seen by operator"
+                          : event.kind === "checked"
+                            ? "Operator finding saved"
+                            : event.kind === "recheck"
+                              ? "Evidence rechecked"
+                              : event.kind.replaceAll("_", " ")}
+                      </strong>
+                      <time dateTime={event.at}>{event.at} · source time</time>
+                      <p>{event.summary}</p>
+                    </li>
+                  ))}
+                </ol>
+              </details>
+            </section>
+          )}
           <section>
             <h3>Data & provenance</h3>
             <dl>
@@ -1451,6 +2172,22 @@ type FleetReport = {
   stages: { id: string; name: string; metrics: FleetMetrics }[];
   limits: string[];
   recordings: { well_id: string; file: string; hydrate_events: number }[];
+  model_comparison?: {
+    id: string;
+    qualifies: boolean;
+    selected: boolean;
+    validation: {
+      events_detected: number;
+      hydrate_events: number;
+      false_alarm_minutes: number;
+      classification_recall: { lookalike: number };
+    };
+  }[];
+  selected_candidate?: {
+    id: string;
+    feature_family: string;
+    weighting: string;
+  };
 };
 
 export function FleetResults() {
@@ -1523,8 +2260,13 @@ export function FleetResults() {
         <ArrowRight size={17} />
         <div>
           <span>02 · CHOOSE</span>
-          <strong>{report.candidates.length} candidates</strong>
-          <small>Validation folds keep wells separate</small>
+          <strong>{report.candidates.length} alarm policies per model</strong>
+          <small>
+            {report.model_comparison?.length
+              ? `${report.model_comparison.length} classifiers · `
+              : ""}
+            Validation folds keep wells separate
+          </small>
         </div>
         <ArrowRight size={17} />
         <div>
@@ -1577,13 +2319,13 @@ export function FleetResults() {
         <div>
           <h3>
             {accepted
-              ? `${accepted} qualifying candidate updates`
+              ? `${accepted} alarm-policy update${accepted === 1 ? "" : "s"}`
               : "The search kept the existing policy"}
           </h3>
           <p>
             {accepted
               ? "Only validation improvements that preserved detected events could be accepted."
-              : `None of the ${report.candidates.length} candidates improved the validation objective while preserving detected events.`}{" "}
+              : `None of the ${report.candidates.length} alarm policies improved the validation objective while preserving detected events.`}{" "}
             Active threshold{" "}
             {number(report.selected_policy.activation_threshold, 2)} ·{" "}
             {report.selected_policy.persistence_minutes}-minute persistence ·{" "}
@@ -1632,6 +2374,79 @@ export function FleetResults() {
         </p>
       </div>
       <div className="fleet-result-details">
+        {!!report.model_comparison?.length && (
+          <details className="fleet-model-comparison">
+            <summary>
+              Classifier comparison ·{" "}
+              {report.selected_candidate?.id === "base_class"
+                ? "current classifier retained"
+                : "candidate selected"}
+            </summary>
+            <div className="fleet-result-expanded">
+              <p>
+                Grouped development-validation results, selected before held-out
+                prediction. An accepted alarm-policy update and a better
+                classifier are separate decisions.
+              </p>
+              <div className="fleet-result-table-wrap">
+                <table className="fleet-result-table">
+                  <thead>
+                    <tr>
+                      <th>Classifier</th>
+                      <th>Events caught</th>
+                      <th>False alert minutes</th>
+                      <th>Lookalike recall</th>
+                      <th>Decision</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {report.model_comparison.map((candidate) => (
+                      <tr key={candidate.id}>
+                        <td>
+                          {{
+                            base_class: "Current classifier",
+                            base_record: "Equal recording weights",
+                            relative_record: "Relative changes",
+                            hybrid_record: "Combined features",
+                          }[candidate.id] || candidate.id}
+                        </td>
+                        <td>
+                          {candidate.validation.events_detected} /{" "}
+                          {candidate.validation.hydrate_events}
+                        </td>
+                        <td>
+                          {candidate.validation.false_alarm_minutes.toLocaleString()}
+                        </td>
+                        <td>
+                          {number(
+                            candidate.validation.classification_recall
+                              .lookalike * 100,
+                            1,
+                          )}
+                          %
+                        </td>
+                        <td>
+                          {candidate.selected
+                            ? candidate.id === "base_class"
+                              ? "Retain incumbent"
+                              : "Selected"
+                            : candidate.qualifies
+                              ? "Qualifies"
+                              : "Rejected"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p>
+                {report.selected_candidate?.id === "base_class"
+                  ? "No challenger passed the validation gates. The existing classifier remains active."
+                  : "The selected classifier passed the validation gates. Held-out results above remain separate."}
+              </p>
+            </div>
+          </details>
+        )}
         <button
           className="fleet-text-button"
           onClick={() => setExpanded(!expanded)}
@@ -1689,6 +2504,180 @@ export function FleetResults() {
           </div>
         )}
       </div>
+      <WorkflowResults />
+    </section>
+  );
+}
+
+function WorkflowResults() {
+  const [report, setReport] = useState<FleetWorkflowReport | null>(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    api<FleetWorkflowReport>("/workflow-results")
+      .then(setReport)
+      .catch((e) => setError(e.message));
+  }, []);
+  const metrics = report?.metrics;
+  return (
+    <section
+      className="fleet-workflow-results"
+      aria-label="Operator workflow evaluation"
+    >
+      <div className="fleet-card-heading">
+        <div>
+          <div className="fleet-eyebrow">
+            OPERATOR WORKFLOW · SEPARATE EVALUATION
+          </div>
+          <h2>Does the follow-up work?</h2>
+          <small>
+            Replay behavior and scripted checks. Separate from detection-model
+            accuracy.
+          </small>
+        </div>
+        <span className="fleet-source">No LLM calls</span>
+      </div>
+      {error ? (
+        <p className="fleet-workflow-empty">
+          Workflow evaluation is unavailable: {error}
+        </p>
+      ) : !report ? (
+        <p className="fleet-workflow-empty">
+          Loading the saved workflow evaluation…
+        </p>
+      ) : report.status !== "complete" || !metrics ? (
+        <p className="fleet-workflow-empty">
+          No completed workflow evaluation has been saved yet.
+        </p>
+      ) : (
+        <>
+          <div className="fleet-workflow-metrics">
+            <div>
+              <span>Normal minutes flagged for attention</span>
+              <strong>
+                {metrics.model_only_false_attention_minutes.toLocaleString()}{" "}
+                <ArrowRight size={13} />{" "}
+                {metrics.workflow_false_attention_minutes.toLocaleString()}
+              </strong>
+              <small>Model alarm → complete workflow</small>
+            </div>
+            <div>
+              <span>Normal minutes on watch</span>
+              <strong>
+                {metrics.workflow_false_watch_minutes.toLocaleString()}
+              </strong>
+              <small>Additional operator review burden</small>
+            </div>
+            <div>
+              <span>Minutes with unavailable evidence</span>
+              <strong>
+                {metrics.workflow_unavailable_minutes.toLocaleString()}
+              </strong>
+              <small>All replay minutes; never treated as normal</small>
+            </div>
+          </div>
+          <p className="fleet-workflow-scope">
+            {metrics.recordings} real recordings ·{" "}
+            {metrics.observed_minutes.toLocaleString()} observed minutes ·{" "}
+            {metrics.normal_minutes.toLocaleString()} labelled normal minutes. A
+            flagged recording means watch or attention overlapped its event,
+            including flags already present before the event. This does not
+            establish early warning or a correct diagnosis.
+          </p>
+          <div className="fleet-workflow-disclosures">
+            <details>
+              <summary>Event coverage and limitations</summary>
+              <div className="fleet-workflow-detail">
+                <table className="fleet-sensor-table">
+                  <thead>
+                    <tr>
+                      <th>Labelled recording</th>
+                      <th>Flagged by workflow</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>Hydrate</td>
+                      <td>
+                        {metrics.hydrate_events_detected} /{" "}
+                        {metrics.hydrate_events_total}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>Restriction</td>
+                      <td>
+                        {metrics.restriction_events_detected} /{" "}
+                        {metrics.restriction_events_total}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>Scaling</td>
+                      <td>
+                        {metrics.scaling_events_detected} /{" "}
+                        {metrics.scaling_events_total}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+                <ul>
+                  {report.limits?.map((limit) => (
+                    <li key={limit}>{limit}</li>
+                  ))}
+                </ul>
+                <small>
+                  Model {report.model_id} · generated {report.generated_at}
+                </small>
+              </div>
+            </details>
+            <details>
+              <summary>
+                Scripted workflow checks{" "}
+                <span>
+                  {report.summary?.passed ?? 0} / {report.summary?.total ?? 0}{" "}
+                  passed
+                </span>
+              </summary>
+              <div className="fleet-workflow-detail">
+                <p>
+                  Synthetic scenarios test the software lifecycle. Passing these
+                  checks is not proof of field diagnosis or operator benefit.
+                </p>
+                <ol className="fleet-workflow-scenarios">
+                  {report.scenarios?.map((scenario) => (
+                    <li key={scenario.id}>
+                      <div>
+                        <strong>{scenario.name}</strong>
+                        <span
+                          className={
+                            scenario.status === "pass" ? "pass" : "fail"
+                          }
+                        >
+                          {scenario.status === "pass" ? (
+                            <Check size={12} />
+                          ) : (
+                            <CircleAlert size={12} />
+                          )}{" "}
+                          {scenario.status === "pass" ? "Pass" : "Fail"}
+                        </span>
+                      </div>
+                      <p>{scenario.evidence}</p>
+                      {scenario.metrics && (
+                        <small>
+                          {Object.entries(scenario.metrics)
+                            .map(
+                              ([key, value]) =>
+                                `${key.replaceAll("_", " ")}: ${value}`,
+                            )
+                            .join(" · ")}
+                        </small>
+                      )}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            </details>
+          </div>
+        </>
+      )}
     </section>
   );
 }

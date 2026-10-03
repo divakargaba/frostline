@@ -10,25 +10,36 @@ original files; do not expand to configurable fleets or the full dataset.
 The default map uses `frontend/src/FleetDashboard.tsx` and `backend/fleet.py`:
 four independent feeds, map above graphs, priority/assessment rail, acknowledgment,
 operator observations, targeted telemetry faults, scheduled follow-ups and SSE.
+Public runs default to Guided demo: a paused overview, causal scanning to the next
+meaningful change, then a pause after evidence checks settle. Reading, acknowledgment
+and saved findings never resume the clock. Continuous mode defaults to 12x (one
+source minute per five seconds). Guide checkpoints and selected-well navigation are
+presentation controls, not event labels or changes to model scoring. Preserve
+minute-by-minute parity between guided and continuous replay.
+
 Source timestamps are naive; label them source time, not verified UTC. Map
 positions and alignment across separate recordings are illustrative.
 
 `src/fleet_model.py` trains a saved LightGBM bundle on 17 other wells, with every
-recording of the four demo wells excluded. Three grouped validation folds select
-a threshold/persistence policy before the 11-recording holdout is scored. Run
+recording of the four demo wells excluded. Three grouped validation folds compare four fixed feature/weighting families and
+15 policies each before the 11-recording holdout is scored. All three challengers
+failed predeclared non-regression gates; the incumbent predictor is retained. Run
 `python scripts/train_fleet_model.py`; Results reads the resulting measured report.
 The selected policy reduces false alarms but delays detection. All four held-out
 hydrate recordings are from one well; do not imply four independent hydrate wells.
 Labels never enter runtime model/LLM snapshots. Missing or invalid data remains
 visible. QGL is gas-lift flow, not an oil-production measurement.
 
-`src/fleet_llm.py` implements bounded OpenRouter tool investigations and structured
-assessment validation. The watcher triggers on changed evidence and due rechecks,
-with two concurrent investigations and shared account/request bounds. Stale
-decisions are rejected. Missing keys/provider failures retain numerical monitoring.
-**Live provider verification is pending by user choice.** Mocked integration tests
-prove tool orchestration, not external inference. A configured key must not be
-labeled a successful live assessment. Never reveal or commit `.env` credentials.
+`src/fleet_policy.py` is the shared numerical monitoring policy used by runtime and
+`scripts/evaluate_fleet_workflow.py`. It supplies scenario-specific evidence,
+operator checks, alternatives and scheduled rechecks. Runtime retains check results,
+source-time incident history and before/after evidence. Acknowledgment, completed
+reviews and operator notes never clear sensor concerns or become training labels.
+
+**LLM work is deferred by user choice.** Public FleetSession runs use_llm=False,
+even if a key is present. The existing `src/fleet_llm.py` adapter remains for future
+opt-in work; its integration tests explicitly enable mocked provider mode. Do not
+request a key or claim live verification. Never commit `.env` credentials.
 
 The separate synthetic seed workflow remains under More → Seed sandbox, using
 `src/research.py`, `src/live_agent.py` and `backend/live.py`. Its first 10 days

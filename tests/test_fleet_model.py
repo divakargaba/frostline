@@ -6,8 +6,9 @@ import pytest
 
 from src.fleet_model import (
     BUNDLE_PATH, CLASS_NAMES, DEFAULT_POLICY, EXCLUDED_WELLS, REPORT_PATH,
-    SENSORS, advance_alarm, aggregate_metrics, candidate_qualifies, infer_window, load_bundle,
-    prepare_recording, recording_metrics,
+    SENSORS, advance_alarm, aggregate_metrics, alarm_series, candidate_qualifies,
+    feature_frame, infer_window, load_bundle, model_candidate_qualifies,
+    prepare_recording, recording_metrics, record_class_weights,
 )
 from src.real_pilot import causal_features
 
@@ -144,6 +145,80 @@ def test_candidate_cannot_trade_more_false_alarm_minutes_for_more_detected_event
     assert candidate_qualifies({"events_detected": 4, "false_alarm_minutes": 100}, incumbent)
 
 
+@pytest.mark.parametrize("family", ["base", "relative", "hybrid"])
+def test_feature_families_use_only_past_sensor_values_with_stream_batch_parity(family):
+    frame = sensor_frame(181)
+    frame["ABER-CKP"] = 50.
+    frame["P-TPT"] = 200 + np.sin(np.arange(len(frame)) / 9) * 12
+    frame["P-MON-CKP"] = 190 - np.arange(len(frame)) * .03
+    frame.loc[frame.index[16:23], "P-PDG"] = np.nan
+    frame = frame.drop(frame.index[75:78])
+    spec = {"feature_family": family}
+    batch = feature_frame(frame, spec)
+    for stop in [4, 30, 61, 93, len(frame)]:
+        prefix = frame.iloc[:stop]
+        history = prefix.loc[prefix.index >= prefix.index[-1] - pd.Timedelta(minutes=60)]
+        streamed = feature_frame(history, spec).iloc[-1]
+        np.testing.assert_allclose(streamed, batch.iloc[stop - 1], rtol=1e-8, atol=1e-8, equal_nan=True)
+    poisoned = frame.copy()
+    poisoned["class"], poisoned["state"] = 108, 8
+    poisoned.iloc[93:, :len(SENSORS)] = 1e10
+    pd.testing.assert_frame_equal(feature_frame(poisoned.iloc[:93], spec), batch.iloc[:93])
+    assert not any(name in batch for name in ["class", "state", "recording_id", "well_id"])
+
+
+def test_relative_features_are_scale_relative_and_preserve_temperature_differences():
+    frame = sensor_frame(90)
+    frame["ABER-CKP"] = 50.
+    transformed = frame.copy()
+    for name in ["P-PDG", "P-TPT", "P-MON-CKP"]:
+        transformed[name] *= 3
+    transformed["T-TPT"] += 273.15
+    actual = feature_frame(transformed, {"feature_family": "relative"})
+    expected = feature_frame(frame, {"feature_family": "relative"})
+    np.testing.assert_allclose(actual, expected, rtol=1e-7, atol=1e-7, equal_nan=True)
+
+
+def test_record_class_weights_equalize_records_and_classes_without_dropping_unknown_history():
+    labels = [pd.Series([0, 0, 1, np.nan]), pd.Series([0, 1, 1, 2, 2, 2])]
+    weight = record_class_weights(labels)
+    y = pd.concat(labels, ignore_index=True)
+    assert weight.iloc[3] == 0
+    assert weight[y.notna()].mean() == pytest.approx(1.)
+    assert weight[y.eq(0)].sum() == pytest.approx(weight[y.eq(1)].sum())
+    assert weight[y.eq(1)].sum() == pytest.approx(weight[y.eq(2)].sum())
+    assert weight.iloc[:2].sum() == pytest.approx(weight.iloc[4])
+    assert weight.iloc[2] == pytest.approx(weight.iloc[5:7].sum())
+
+
+def test_model_selection_rejects_hidden_operational_or_classification_regressions():
+    incumbent = {"events_detected": 9, "false_alarm_minutes": 1500,
+                 "classification_recall": {"lookalike": .25}, "classification_macro_f1": .5}
+    better = {**incumbent, "classification_recall": {"lookalike": .3}, "classification_macro_f1": .55}
+    assert model_candidate_qualifies(better, incumbent)
+    assert not model_candidate_qualifies(incumbent, incumbent)
+    assert not model_candidate_qualifies({**better, "events_detected": 8}, incumbent)
+    assert not model_candidate_qualifies({**better, "false_alarm_minutes": 1501}, incumbent)
+    assert not model_candidate_qualifies({**better, "classification_macro_f1": .49}, incumbent)
+    assert not model_candidate_qualifies({**better, "classification_recall": {"lookalike": .24}}, incumbent)
+
+
+def test_batch_alarm_is_identical_to_stream_state_through_gaps_and_missing_pressure():
+    frame = sensor_frame(120).drop(sensor_frame(120).index[[22, 58]])
+    probability = np.random.default_rng(42).choice([.2, .45, .9, np.nan], size=len(frame))
+    probability[5:15] = .9
+    probability[40:48] = .2
+    frame.loc[frame.index[14:20], ["P-PDG", "P-TPT", "P-MON-CKP"]] = np.nan
+    for persistence in [3, 5, 10]:
+        policy = {**DEFAULT_POLICY, "persistence_minutes": persistence}
+        state, expected = {}, []
+        for i, stamp in enumerate(frame.index):
+            available = frame.iloc[i][["P-PDG", "P-TPT", "P-MON-CKP"]].notna().any()
+            state = advance_alarm(state, probability[i], available, stamp, policy)
+            expected.append(state["alarm"])
+        np.testing.assert_array_equal(alarm_series(frame, probability, policy), expected)
+
+
 @pytest.mark.skipif(not BUNDLE_PATH.exists(), reason="Train fleet model first")
 def test_saved_bundle_and_report_exclude_every_demo_well():
     bundle = load_bundle()
@@ -160,3 +235,23 @@ def test_saved_bundle_and_report_exclude_every_demo_well():
     assert report["validation_selected"]["events_detected"] >= report["validation_baseline"]["events_detected"]
     assert report["validation_selected"]["false_alarm_minutes"] <= report["validation_baseline"]["false_alarm_minutes"]
     assert report["evaluation_hydrate_wells"] == ["WELL-00019"]
+    if "model_comparison" in report:
+        assert len(report["model_comparison"]) == 4
+        assert not report["selection_rules"]["heldout_used_for_selection"]
+        assert sum(item["selected"] for item in report["model_comparison"]) == 1
+        incumbent = report["validation_incumbent"]["metrics"]
+        if bundle["selected_candidate"] != "base_class":
+            assert model_candidate_qualifies(report["validation_selected"], incumbent)
+
+
+@pytest.mark.skipif(not BUNDLE_PATH.exists(), reason="Train fleet model first")
+def test_saved_model_scores_have_full_batch_and_stream_parity():
+    bundle = load_bundle()
+    frame = sensor_frame(181)
+    frame["ABER-CKP"] = 50.
+    frame["P-TPT"] = 200 + np.sin(np.arange(len(frame)) / 11) * 30
+    frame["P-MON-CKP"] = 150 - np.arange(len(frame)) * .08
+    probability = bundle["model"].predict_proba(feature_frame(frame, bundle)[bundle["feature_names"]])
+    for stop in [10, 61, 100, 181]:
+        inference = infer_window(frame.iloc[:stop], bundle)
+        np.testing.assert_allclose(list(inference["scores"].values()), probability[stop - 1], atol=1e-12)

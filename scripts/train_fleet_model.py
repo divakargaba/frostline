@@ -10,4 +10,7 @@ if __name__ == "__main__":
     report = train_bundle()
     print(json.dumps({"bundle": str(BUNDLE_PATH), "report": str(REPORT_PATH),
                       "model_id": report["model_id"], "policy": report["selected_policy"],
+                      "selected_candidate": report["selected_candidate"],
+                      "model_comparison": [{key: item[key] for key in ["id", "qualifies", "selected", "policy", "validation"]}
+                                           for item in report["model_comparison"]],
                       "stages": report["stages"]}, indent=2))

@@ -7,6 +7,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from functools import lru_cache
 import json
+import hashlib
 import math
 import os
 from pathlib import Path
@@ -70,13 +71,13 @@ def capabilities():
         from src.fleet_model import load_bundle
         bundle = load_bundle()
         ready = bool(bundle)
-        reason = "Model ready. OpenRouter is configured; live tool verification is pending." if configured else "Model ready. Add an OpenRouter key to enable live LLM investigations."
+        reason = "Model ready. Automatic evidence checks are enabled; LLM investigations are deferred."
     except Exception as exc:
         ready = False
         reason = "Train the fleet model before starting: python scripts/train_fleet_model.py"
         if not isinstance(exc, (ImportError, FileNotFoundError)):
             reason = "The saved fleet model could not be loaded. Rebuild it with scripts/train_fleet_model.py."
-    return {"model_ready": ready, "llm_configured": configured, "readiness_message": reason}
+    return {"model_ready": ready, "llm_configured": configured, "llm_deferred": True, "readiness_message": reason}
 
 
 @lru_cache(maxsize=1)
@@ -103,13 +104,17 @@ def source_frames():
 def empty_well(well):
     return {"id": well, "name": f"Well {well.removeprefix('WELL-').lstrip('0') or '0'}", "status": "unavailable", "source_file": "", "source_timestamp": None,
             "quality": {"status": "unavailable", "summary": "Loading historical measurements", "missing": [], "invalid": [], "unchanged": []},
-            "last_assessed": None, "next_check": None, "incident": None, "assessment": None, "frames": [], "investigation": "idle", "activity": "Preparing recording"}
+            "last_assessed": None, "next_check": None, "incident": None, "assessment": None, "frames": [], "investigation": "idle", "activity": "Preparing recording",
+            "timeline": [], "followup": {"last_checked_at": None, "next_check_at": None, "trigger": "", "change_summary": "Awaiting the first assessment."}}
 
 
 class FleetSession:
-    def __init__(self, speed=60):
+    def __init__(self, speed=60, *, use_llm=False, mode="continuous"):
+        if mode not in {"guided", "continuous"}:
+            raise ValueError("Choose guided or continuous replay")
         self.id = uuid.uuid4().hex
         self.speed = speed
+        self.mode = mode
         self.status = "preparing"
         self.index = 0
         self.wells = {w: empty_well(w) for w in WELLS}
@@ -125,6 +130,9 @@ class FleetSession:
         self.bundle = None
         self.requests_used = 0
         self.live_verified = False
+        # Provider integration is retained for explicit tests/future work. Public runs
+        # stay local even if a developer happens to have a provider key configured.
+        self.use_llm = use_llm
         self.request_budget = 18
         self.fault = None
         self.error = None
@@ -132,17 +140,32 @@ class FleetSession:
         self.created_at = datetime.now(timezone.utc).isoformat()
         self.task = None
         self.step_requested = False
+        self.guide = {"phase": "overview", "checkpoint": None}
+        self._guide_seen_watch = set()
+        self._guide_seen_watch_recovery = set()
+        self._guide_scenarios = {}
+        self._guide_candidates = []
+        self._guide_checkpoint_pending = None
+        self._guide_settle = None
+        self._guide_operator_wells = set()
 
     def priority(self):
         return sorted(WELLS, key=lambda w: (RANK[self.wells[w]["status"]], bool((self.wells[w].get("incident") or {}).get("acknowledged")), self.state[w]["due"], WELLS.index(w)))
 
     def snapshot(self):
-        return safe({"id": self.id, "status": self.status, "speed": self.speed, "elapsed_seconds": self.index * 60, "index": self.index, "total": TOTAL,
+        return safe({"id": self.id, "status": self.status, "speed": self.speed, "mode": self.mode, "guide": deepcopy(self.guide), "elapsed_seconds": self.index * 60, "index": self.index, "total": TOTAL,
                      "agent_mode": "live" if self.live_verified else "rules", **self.caps, "wells": [deepcopy(self.wells[w]) for w in WELLS],
                      "priority": self.priority(), "last_event_id": len(self.events), "requests_used": self.requests_used, "request_budget": self.request_budget,
                      "fault": self.fault, "error": self.error})
 
     def publish(self, reason="update"):
+        if (not self.use_llm and self.mode == "guided" and self.guide["phase"] in {"seeking", "assessing"}
+                and reason in {"tick", "investigation_started", "assessment"}):
+            # Guided seeking has no useful intermediate reading to linger on.
+            # Keep every audit event, but publish the next settled snapshot as
+            # one coherent view instead of thousands of full-history copies.
+            self.audit.append({"kind": reason, "elapsed_seconds": self.index * 60, "snapshot_coalesced": True})
+            return
         event_id = len(self.events) + 1
         payload = self.snapshot()
         payload["last_event_id"] = event_id
@@ -165,45 +188,207 @@ class FleetSession:
             for t, row in source["warmup"].iloc[-30:].iterrows():
                 self.wells[well]["frames"].append({"t": t.isoformat(), "elapsed_seconds": int((t - source["future"].index[0]).total_seconds()), "sensors": safe(row.reindex(SENSORS).to_dict()), "risk_score": None})
             self.wells[well]["activity"] = "Ready to monitor"
-        self.status = "running"
+        # Warm-up charts are observed context, not a secretly advanced alarm
+        # state. Both modes process their first monitor tick at replay index 0.
+        self.status = "paused" if self.mode == "guided" else "running"
+        self.guide["phase"] = "overview" if self.mode == "guided" else "seeking"
         self.publish("prepared")
 
+    def guide_checkpoint(self, kind, well=None, *, title=None, summary=None):
+        item = self.wells[well] if well else None
+        titles = {
+            "concern": "A new concern needs review", "escalation": "A concern needs priority review",
+            "recovery": "The monitored concern has eased", "telemetry_loss": "Pressure telemetry needs verification",
+            "telemetry_recovery": "Pressure telemetry has improved", "operator_followup": "Your requested review is complete",
+            "step": "One source minute reviewed", "ended": "The historical replay has ended",
+        }
+        return {"id": uuid.uuid4().hex, "kind": kind, "title": title or titles[kind],
+                "summary": summary or ((item.get("assessment") or {}).get("summary") if item else None) or "Review the current measurements and completed evidence checks.",
+                "well_id": well, "source_timestamp": item["source_timestamp"] if item else None, "index": self.index}
+
+    @staticmethod
+    def critical_telemetry(quality):
+        return tuple(sorted(set(quality.get("missing", []) + quality.get("invalid", [])) & set(PRESSURES)))
+
+    def record_guided_change(self, well, previous, previous_quality, had_reading, assessment):
+        """Presentation stopping points use observed state only, never labels.
+
+        Repeated watch/recheck events still update the full UI and audit. Only
+        their presentation stops are deduplicated. Escalations and critical
+        telemetry transitions always remain eligible for a checkpoint.
+        """
+        item = self.wells[well]
+        status = item["status"]
+        scenario = assessment.get("scenario", assessment.get("category", "monitoring"))
+        earlier_scenario = self._guide_scenarios.get(well)
+        self._guide_scenarios[well] = scenario
+        old_quality = self.critical_telemetry(previous_quality) if had_reading else ()
+        new_quality = self.critical_telemetry(item["quality"])
+        kind = None
+        if status == "attention" and previous != "attention":
+            kind = "escalation"
+        elif new_quality != old_quality:
+            kind = "telemetry_recovery" if old_quality and set(new_quality).issubset(old_quality) else "telemetry_loss"
+        elif had_reading and previous == "attention" and status != "attention":
+            kind = "recovery"
+        elif status == "watch" and (well, scenario) not in self._guide_seen_watch:
+            kind = "concern"
+        elif had_reading and previous == "watch" and status == "normal" and (well, earlier_scenario) not in self._guide_seen_watch_recovery:
+            kind = "recovery"
+            self._guide_seen_watch_recovery.add((well, earlier_scenario))
+        if status == "watch":
+            self._guide_seen_watch.add((well, scenario))
+        if kind and self.mode == "guided":
+            candidate = self.guide_checkpoint(kind, well, summary=assessment["summary"])
+            # advance() has not yet incremented the shared presentation clock.
+            candidate["index"] = self.index + 1
+            self._guide_candidates.append(candidate)
+
+    def begin_settling(self, phase, checkpoint=None):
+        self._guide_settle = phase
+        self._guide_checkpoint_pending = checkpoint
+        self.guide["phase"] = "assessing"
+        self.status = "running"
+        self.publish("guide_assessing")
+
+    def settle_checkpoint(self):
+        """Called only when all current and queued investigations have finished."""
+        checkpoint = self._guide_checkpoint_pending
+        phase = self._guide_settle
+        self._guide_settle = None
+        self._guide_checkpoint_pending = None
+        if self.index >= TOTAL:
+            self.status = "completed"
+            self.guide = {"phase": "ended", "checkpoint": self.guide_checkpoint("ended", summary="All available source minutes and queued evidence reviews are complete. The final well conditions remain visible.")}
+            self.publish("completed")
+            return
+        if phase == "operator_followup":
+            well = checkpoint.get("well_id") if checkpoint else None
+            if well:
+                item = self.wells[well]
+                checkpoint["summary"] = item["followup"]["change_summary"] + " " + item["assessment"]["next_step"]
+            self._guide_operator_wells.clear()
+        if checkpoint is None:
+            checkpoint = self.guide_checkpoint("step" if phase == "step" else "concern")
+        # A successful stop is published after assessments, never while jobs are
+        # still mutating the card the operator is about to read.
+        checkpoint["index"] = self.index
+        self.guide = {"phase": "checkpoint", "checkpoint": checkpoint}
+        self.status = "paused"
+        self.publish("guide_checkpoint" if self.mode == "guided" else "stepped")
+
+    def continue_guided(self):
+        if self.status == "running":
+            return
+        if self._guide_operator_wells:
+            well = next((w for w in self.priority() if w in self._guide_operator_wells), None)
+            checkpoint = self.guide_checkpoint("operator_followup", well)
+            self.begin_settling("operator_followup", checkpoint)
+        elif self._guide_checkpoint_pending:
+            self.begin_settling("checkpoint", self._guide_checkpoint_pending)
+        elif self.jobs or self.pending:
+            # A manually interrupted assessment is finished at its current
+            # reading before any further historical measurements are consumed.
+            self.begin_settling("checkpoint", self.guide_checkpoint("operator_followup", summary="The interrupted evidence review has finished at the same source reading."))
+        else:
+            self.status = "running"
+            self.guide["phase"] = "seeking"
+            self._guide_settle = None
+            self._guide_candidates.clear()
+
+    def clear_dormant_guidance(self):
+        """Continuous playback must not later revive an earlier guided stop."""
+        self._guide_checkpoint_pending = None
+        self._guide_candidates.clear()
+        self._guide_operator_wells.clear()
+        self.guide["checkpoint"] = None
+
     def default_assessment(self, well, result, status):
-        scores = result.get("scores", {})
-        quality = result.get("quality", {})
-        evidence = []
-        if scores.get("hydrate") is not None:
-            evidence.append(f"Hydrate model score {scores['hydrate']:.2f}; alarm threshold {self.bundle['policy']['activation_threshold']:.2f}.")
-        if scores.get("lookalike") is not None:
-            evidence.append(f"Other restriction/scaling model score {scores['lookalike']:.2f}.")
-        if quality.get("summary"):
-            evidence.append(quality["summary"])
-        text = {
-            "normal": ("No persistent process concern in the available signals.", "Continue monitoring."),
-            "watch": ("A changing sensor pattern needs more evidence.", "Review the recent trends and await the scheduled check."),
-            "attention": ("A persistent abnormal pattern needs operator review.", "Review the pressure trends and request an engineering check."),
-            "unavailable": ("Pressure evidence is unavailable; the condition cannot be assessed.", "Verify pressure telemetry before relying on a process assessment."),
-        }[status]
-        if status == "watch" and quality.get("invalid"):
-            text = ("Some sensor values are invalid; verify telemetry before diagnosing the well.", "Check the flagged channels and compare the remaining pressure trends.")
-            evidence = [quality.get("summary", "Invalid sensor values excluded."), *evidence]
-        elif status == "attention" and self.state[well]["alarm"].get("active"):
-            text = ("A persistent hydrate-like pattern needs operator review.", "Review pressure trends and ask the responsible engineer to assess the well.")
-        return {"summary": text[0], "evidence": evidence[:2], "next_step": text[1], "source": "rules", "uncertainty": "Numerical monitoring; LLM review pending." if self.caps["llm_configured"] and status != "normal" else "Model scores are not a confirmed diagnosis.", "tools": []}
+        from src.fleet_policy import operator_assessment
+        assessment = operator_assessment(result, self.history[well], status, self.state[well], self.bundle["policy"])
+        return self.merge_checks(well, assessment)
 
     def queue(self, well, reason):
         self.pending.add(well)
+        self.state[well]["queued_reason"] = reason
         if well not in self.jobs:
             self.wells[well]["investigation"] = "queued"
             self.wells[well]["activity"] = reason
 
+    def timeline(self, well, kind, summary):
+        item = self.wells[well]
+        item["timeline"].append({"id": uuid.uuid4().hex, "kind": kind,
+                                 "at": item["source_timestamp"], "recorded_at": datetime.now(timezone.utc).isoformat(), "summary": summary})
+        if len(item["timeline"]) > 80:
+            entries = item["timeline"]
+            # Frequent scheduled checks must not evict the incident milestones
+            # used by the operator's Detected / Seen / Checked / Recovered view.
+            keep = {next((i for i, entry in enumerate(entries) if entry["kind"] == "detected"), 0)}
+            for milestone in ["seen", "checked", "review_completed", "recovered"]:
+                found = next((i for i in range(len(entries) - 1, -1, -1) if entries[i]["kind"] == milestone), None)
+                if found is not None:
+                    keep.add(found)
+            for i in range(len(entries) - 1, -1, -1):
+                if len(keep) >= 80:
+                    break
+                keep.add(i)
+            item["timeline"] = [entries[i] for i in sorted(keep)]
+
+    def open_incident(self, well):
+        item = self.wells[well]
+        item["incident"] = {"id": uuid.uuid4().hex, "acknowledged": False, "completed": False,
+                            "opened_at": item["source_timestamp"], "note": "", "checks": {}, "condition_cleared": False}
+        item["timeline"] = []
+        item["last_assessed"] = None
+        item["followup"] = {"last_checked_at": None, "next_check_at": item["next_check"],
+                            "trigger": "New incident", "change_summary": "New evidence is awaiting its first review."}
+        self.timeline(well, "detected", item["assessment"]["summary"] if item["assessment"] else "New evidence needs review.")
+
+    def merge_checks(self, well, assessment):
+        checks = (self.wells[well].get("incident") or {}).get("checks", {})
+        result = deepcopy(assessment)
+        result["category"] = result.get("category", result.get("scenario", "monitoring"))
+        merged = []
+        for check in result.get("checks", []):
+            definition = hashlib.sha256(json.dumps([check["id"], check["label"], check["reason"]]).encode()).hexdigest()[:16]
+            saved = checks.get(check["id"], {})
+            saved = saved if saved.get("definition") == definition else {}
+            merged.append({**check, "status": "pending", "note": "", "updated_at": None, **saved, "definition": definition})
+        result["checks"] = merged
+        return result
+
+    def finish_followup(self, well, before, trigger):
+        item = self.wells[well]
+        after = {"at": item["source_timestamp"], "status": item["status"],
+                 "summary": item["assessment"]["summary"], "evidence": item["assessment"]["evidence"]}
+        if not before:
+            change = "First evidence check completed."
+        elif before["at"] == after["at"]:
+            change = "Same source reading reviewed; no new measurements have arrived."
+        elif before["status"] != after["status"]:
+            change = f"Status changed from {before['status']} to {after['status']} with new measurements."
+        elif before["evidence"] != after["evidence"]:
+            change = "New measurements reviewed; the status is unchanged."
+        else:
+            change = "New readings checked; the evidence and status remain stable."
+        item["followup"] = {"last_checked_at": after["at"], "next_check_at": item["next_check"],
+                            "trigger": trigger, "change_summary": change, "before": before, "after": after}
+        if item["incident"]:
+            self.timeline(well, "recheck", change)
+
     def advance(self):
-        from src.fleet_model import infer_window, advance_alarm
+        from src.fleet_model import infer_window
+        from src.fleet_policy import advance_monitor
         if self.index >= TOTAL:
             return
+        if self.mode == "continuous":
+            self.clear_dormant_guidance()
+        self._guide_candidates = []
         for well in WELLS:
             item = self.wells[well]
             state = self.state[well]
+            previous_quality = item["quality"]
+            had_reading = item["source_timestamp"] is not None
             row = self.sources[well]["future"].iloc[self.index:self.index + 1].copy()
             if self.fault and self.fault["well_id"] == well:
                 row.loc[:, PRESSURES] = float("nan")
@@ -216,46 +401,11 @@ class FleetSession:
             quality = result.get("quality", {})
             blocked = bool(quality.get("blocked", quality.get("status") == "unavailable"))
             t = row.index[-1]
-            alarm = advance_alarm(state["alarm"], scores.get("hydrate"), not blocked, t, self.bundle["policy"])
-            state["alarm"] = alarm.get("state", alarm)
-            active = bool(alarm.get("active", alarm.get("alarm", False)))
-            p_other = scores.get("lookalike")
-            state["other_run"] = state["other_run"] + 1 if not blocked and p_other is not None and p_other >= .65 else 0
-            if state["other_run"] >= 3:
-                state["other_active"] = True
-            state["other_recovery"] = state["other_recovery"] + 1 if not blocked and p_other is not None and p_other < .55 else 0
-            if state["other_recovery"] >= 5:
-                state["other_active"] = False
-            recent_pressure = self.history[well]["P-TPT"].iloc[-11:].dropna()
-            changing_pressure = len(recent_pressure) >= 6 and abs(recent_pressure.iloc[-1] - recent_pressure.iloc[0]) >= max(2., abs(recent_pressure.iloc[0]) * .02)
             previous = item["status"]
-            previous_base = state["base_status"]
-            if blocked:
-                status = "attention" if previous == "attention" else "unavailable"
-            elif active or state["other_active"]:
-                status = "attention"
-            elif (scores.get("hydrate") or 0) >= .35 or (p_other or 0) >= .5 or changing_pressure or quality.get("invalid"):
-                status = "watch"
-            else:
-                status = "normal"
-            base_status = status
-            state["base_status"] = base_status
-            state["normal_run"] = state["normal_run"] + 1 if base_status == "normal" else 0
-            if state["normal_run"] >= 5:
-                state["agent_status"] = "normal"
-            if RANK[state["agent_status"]] < RANK[status]:
-                status = state["agent_status"]
+            monitored = advance_monitor(state, result, self.history[well], self.bundle["policy"])
+            state.update(monitored["state"])
+            status, material = monitored["status"], monitored["material"]
             score = scores.get("hydrate")
-            pressure = safe(row.iloc[-1].get("P-TPT"))
-            quality_signature = (blocked, tuple(sorted(quality.get("missing", []))), tuple(sorted(quality.get("invalid", []))))
-            score_shift = score is not None and state["revision_score"] is not None and abs(score - state["revision_score"]) >= .2
-            pressure_shift = pressure is not None and state["revision_pressure"] is not None and abs(pressure - state["revision_pressure"]) >= max(5., abs(state["revision_pressure"]) * .03)
-            material = status != previous or base_status != previous_base or quality_signature != state["last_quality"] or score_shift or pressure_shift
-            if material:
-                state["revision"] += 1
-                state["revision_score"] = score
-                state["revision_pressure"] = pressure
-                state["last_quality"] = quality_signature
             item.update(status=status, quality={"status": "unavailable" if blocked else quality.get("status", "good"), "summary": quality.get("summary", ""), "missing": quality.get("missing", []), "invalid": quality.get("invalid", []), "unchanged": quality.get("unchanged", [])}, source_timestamp=t.isoformat())
             item["frames"].append({"t": t.isoformat(), "elapsed_seconds": self.index * 60, "sensors": safe(row.iloc[-1].reindex(SENSORS).to_dict()), "risk_score": scores.get("hydrate")})
             item["frames"] = item["frames"][-240:]
@@ -263,20 +413,28 @@ class FleetSession:
                 item["assessment"] = self.default_assessment(well, result, status)
             if status != "normal":
                 if not item["incident"] or item["incident"].get("condition_cleared"):
-                    item["incident"] = {"id": uuid.uuid4().hex, "acknowledged": False, "completed": False, "opened_at": t.isoformat(), "note": ""}
+                    self.open_incident(well)
+                    item["assessment"] = self.merge_checks(well, monitored["assessment"])
                 elif RANK[status] < RANK[previous]:
                     item["incident"]["acknowledged"] = False
                     item["incident"]["completed"] = False
-            elif item["incident"]:
+                    self.timeline(well, "detected", "The concern escalated; review the updated evidence.")
+            elif item["incident"] and not item["incident"].get("condition_cleared"):
                 item["incident"]["condition_cleared"] = True
+                self.timeline(well, "recovered", "Available measurements now meet the monitoring recovery rules.")
+                self.queue(well, "Checking recovery against the earlier concern")
             due = self.index >= state["due"]
             if status != "normal" and (material or (due and well not in self.jobs)):
                 self.queue(well, "Investigating changed evidence" if material else "Scheduled reassessment")
+            elif due and not self.use_llm and well not in self.jobs:
+                self.queue(well, "Scheduled review of normal measurements")
             elif due:
-                state["due"] = self.index + (15 if status != "normal" else 30)
+                state["due"] = self.index + monitored["recheck_minutes"]
             state["result"] = result
             state["last_score"] = score
             item["next_check"] = (t + pd.Timedelta(minutes=max(1, state["due"] - self.index))).isoformat()
+            item["followup"]["next_check_at"] = item["next_check"]
+            self.record_guided_change(well, previous, previous_quality, had_reading, monitored["assessment"])
         self.index += 1
         self.publish("tick")
 
@@ -307,6 +465,8 @@ class FleetSession:
         state = self.state[well]
         snapshot = self.agent_snapshot(well)
         revision = state["revision"]
+        before = deepcopy(item["followup"].get("after"))
+        trigger = state.pop("queued_reason", "Scheduled reassessment")
         item["investigation"] = "running"
         item["activity"] = "Checking the current evidence"
         trace = []
@@ -331,9 +491,47 @@ class FleetSession:
                 item["activity"] = payload.get("message", payload.get("summary", "Assessing evidence"))
             if item["assessment"]:
                 item["assessment"]["tools"] = deepcopy(trace[-12:])
-            self.publish(kind)
+            # Local checks are atomic and have no suspension points. Their full
+            # evidence remains in the audit/trace; only live network tool calls
+            # need intermediate snapshots while the operator is waiting.
+            if self.use_llm:
+                self.publish(kind)
 
         try:
+            if not self.use_llm:
+                # These checks use the current numerical result without consuming
+                # another reading or advancing persistence a second time. Keep
+                # this local work atomic: emit has no suspension points, so all
+                # evidence and timestamps describe the same observed prefix.
+                from src.fleet_policy import observation_context
+                context = observation_context(self.history[well])
+                has_score = any(v is not None for v in state["result"].get("scores", {}).values())
+                for name, summary in [
+                    ("sensor_quality", state["result"]["quality"].get("summary", "Sensor availability checked.")),
+                    ("causal_model", "Reviewed the existing frozen-model score from observed history; labels excluded." if has_score else "Model abstained: no usable pressure evidence."),
+                    ("pressure_trends", "Reviewed the measured production-line pressure difference." if context["line_difference_bar"] is not None else "Production-line pressure comparison unavailable; a required channel is missing or invalid."),
+                    ("incident_followup", "Applied the scenario checklist and retained operator reports separately."),
+                ]:
+                    await emit({"type": "tool_call", "payload": {"tool": name, "purpose": summary}})
+                    await emit({"type": "tool_result", "payload": {"tool": name, "summary": summary}})
+                if self.status in TERMINAL:
+                    return
+                if state["revision"] != revision:
+                    self.queue(well, "New evidence arrived; refreshing assessment")
+                    return
+                item["assessment"] = self.merge_checks(well, {**self.default_assessment(well, state["result"], item["status"]), "tools": trace})
+                recheck = int(item["assessment"].get("recheck_minutes", 15))
+                state["due"] = max(0, self.index - 1) + recheck
+                state["last_investigation_index"] = self.index
+                item["next_check"] = (pd.Timestamp(item["source_timestamp"]) + pd.Timedelta(minutes=recheck)).isoformat()
+                item["last_assessed"] = snapshot["as_of"]
+                item["investigation"] = "complete"
+                item["activity"] = "Evidence checked; monitoring continues"
+                self.finish_followup(well, before, trigger)
+                state["priorities"].append({"as_of": snapshot["as_of"], "brief": item["assessment"]["summary"], "status": item["status"], "source": "rules"})
+                self.audit.append({"kind": "assessment", "well_id": well, "snapshot_revision": revision, "result": safe(item["assessment"]), "llm_deferred": True})
+                self.publish("assessment")
+                return
             result = await investigate(snapshot, emit, reserve_attempt=self.reserve_attempt)
             metadata = result.get("metadata", {})
             if metadata.get("account_limited"):
@@ -388,6 +586,8 @@ class FleetSession:
             self.jobs.pop(well, None)
             if well in self.pending and self.status not in TERMINAL:
                 item["investigation"] = "queued"
+            elif self.mode == "continuous":
+                self._guide_operator_wells.discard(well)
             self.wake.set()
 
     def dispatch(self):
@@ -408,20 +608,39 @@ class FleetSession:
             await self.prepare()
             next_tick = time.monotonic()
             while self.status not in TERMINAL:
-                if self.index >= TOTAL:
-                    if not self.jobs and not self.pending:
-                        self.status = "completed"
-                        self.publish("completed")
-                        break
-                elif self.step_requested or (self.status == "running" and time.monotonic() >= next_tick):
-                    stepping = self.step_requested
+                if self.step_requested:
                     self.step_requested = False
+                    if self.index < TOTAL:
+                        self.advance()
+                    next_tick = time.monotonic() + 60 / self.speed
+                    self.begin_settling("step", self.guide_checkpoint("step", summary="One source minute was processed for all four wells. Evidence reviews are complete; inspect the updated measurements before continuing."))
+                elif self.status == "running" and self._guide_settle:
+                    self.dispatch()
+                    if not self.jobs and not self.pending:
+                        self.settle_checkpoint()
+                elif self.status == "running" and self.index >= TOTAL:
+                    self.begin_settling("ended")
+                elif self.status == "running" and self.mode == "guided":
+                    # Each batch is one full four-well minute. Yielding below
+                    # keeps pause/cancel responsive without dropping any input.
+                    self.advance()
+                    if self._guide_candidates:
+                        order = {"escalation": 0, "telemetry_loss": 1, "recovery": 2, "telemetry_recovery": 3, "concern": 4}
+                        candidates = sorted(self._guide_candidates, key=lambda c: (order[c["kind"]], self.priority().index(c["well_id"])))
+                        checkpoint = candidates[0]
+                        others = len({c["well_id"] for c in candidates}) - 1
+                        if others:
+                            checkpoint["summary"] += f" Changes at {others} other {'well are' if others == 1 else 'wells are'} visible in the fleet view."
+                        self.begin_settling("checkpoint", checkpoint)
+                    elif self.index >= TOTAL:
+                        self.begin_settling("ended")
+                elif self.status == "running" and time.monotonic() >= next_tick:
                     self.advance()
                     next_tick = time.monotonic() + 60 / self.speed
-                    if stepping:
-                        self.status = "paused"
-                        self.publish("stepped")
                 self.dispatch()
+                if self.status == "running" and self.mode == "guided" and not self._guide_settle:
+                    await asyncio.sleep(0)
+                    continue
                 self.wake.clear()
                 try:
                     await asyncio.wait_for(self.wake.wait(), timeout=.1)
@@ -431,13 +650,14 @@ class FleetSession:
             pass
         except Exception as exc:
             self.status = "failed"
+            self.guide["phase"] = "ended"
             self.error = f"Fleet preparation or monitoring failed: {type(exc).__name__}: {str(exc)[:180]}"
             self.publish("failed")
         finally:
             for job in list(self.jobs.values()):
                 job.cancel()
 
-    def control(self, action, speed=None, well_id=None, fault=None):
+    def control(self, action, speed=None, well_id=None, fault=None, mode=None):
         if self.status == "preparing":
             if action != "cancel":
                 raise ValueError("Wait for the recordings to load")
@@ -445,67 +665,140 @@ class FleetSession:
             raise ValueError("This run has ended; start a new run")
         if action == "pause":
             self.status = "paused"
+            self.step_requested = False
+            self._guide_settle = None
+            self.guide["phase"] = "manual_pause"
         elif action == "resume":
-            self.status = "running"
+            if self.mode == "guided":
+                self.continue_guided()
+            else:
+                self.status = "running"
+                self._guide_settle = None
+                self.clear_dormant_guidance()
+                self.guide["phase"] = "seeking"
+        elif action == "next_moment":
+            if self.mode != "guided":
+                raise ValueError("Switch to guided mode before choosing the next important moment")
+            self.continue_guided()
         elif action == "step":
+            if self.status == "running":
+                raise ValueError("Pause before stepping one source minute")
             self.status = "paused"
             self.step_requested = True
+            self._guide_settle = None
+            self._guide_operator_wells.clear()
         elif action == "cancel":
             self.status = "cancelled"
+            self.guide["phase"] = "ended"
+            self.step_requested = False
+            self._guide_settle = None
             self.pending.clear()
             for job in list(self.jobs.values()):
                 job.cancel()
             if self.task:
                 self.task.cancel()
         elif action == "speed":
-            if speed not in {30, 60, 120}:
-                raise ValueError("Choose speed 30, 60, or 120")
+            if speed not in {12, 30, 60, 120}:
+                raise ValueError("Choose speed 12, 30, 60, or 120")
             self.speed = speed
+        elif action == "mode":
+            if mode not in {"guided", "continuous"}:
+                raise ValueError("Choose guided or continuous replay")
+            self.mode = mode
+            self.status = "paused"
+            self.step_requested = False
+            self._guide_settle = None
+            self.guide["phase"] = "manual_pause"
         elif action == "inject":
             if well_id not in WELLS or fault not in {"pressure_offline", "restore"}:
                 raise ValueError("Choose a well and a supported fault")
             self.fault = None if fault == "restore" else {"well_id": well_id, "kind": fault, "remaining": 5}
             self.state[well_id]["revision"] += 1
             self.audit.append({"kind": "injection", "well_id": well_id, "fault": fault, "excluded_from_benchmark": True, "at_index": self.index})
+        else:
+            raise ValueError("Unknown replay action")
         self.publish(action)
         self.wake.set()
 
-    def operator_action(self, well, action, note):
+    def operator_action(self, well, action, note=None, check_id=None, result=None, incident_id=None, check_definition=None):
         if well not in self.wells:
             raise ValueError("Unknown well")
         item = self.wells[well]
         if not item["incident"]:
             raise ValueError("This well has no incident")
+        if incident_id is not None and incident_id != item["incident"]["id"]:
+            raise ValueError("The incident changed. Review the current incident before saving.")
+        stamp = datetime.now(timezone.utc).isoformat()
         if action == "acknowledge":
             item["incident"]["acknowledged"] = True
+            item["incident"]["acknowledged_at"] = stamp
+            self.timeline(well, "seen", "Operator acknowledged the alert; monitoring continues.")
         elif action == "complete":
             item["incident"]["completed"] = True
+            item["incident"]["completed_at"] = stamp
+            if note and note.strip():
+                item["incident"]["note"] = note.strip()
+                self.timeline(well, "observation", "Operator observation saved: " + note.strip())
+                self.state[well]["revision"] += 1
+                if self.status not in TERMINAL:
+                    self.queue(well, "Reviewing the completed operator review and observation")
+            self.timeline(well, "review_completed", "Operator review recorded; recovery still depends on new sensor evidence.")
         elif action == "observation":
             if not note or not note.strip():
                 raise ValueError("Enter an observation")
             item["incident"]["note"] = note.strip()
+            self.timeline(well, "observation", "Operator observation saved: " + note.strip())
             self.state[well]["revision"] += 1
             if self.status not in TERMINAL:
                 self.queue(well, "Reviewing the operator observation")
-        self.audit.append({"kind": "operator_action", "well_id": well, "action": action, "note": note, "human_report_not_ground_truth": True, "at_index": self.index})
+        elif action == "check":
+            check = next((c for c in (item.get("assessment") or {}).get("checks", []) if c["id"] == check_id), None)
+            if check is None or result not in {"confirmed", "not_confirmed", "unavailable"}:
+                raise ValueError("Choose a current check and a valid result")
+            if check_definition != check["definition"]:
+                raise ValueError("The requested check changed. Review its current measurements before saving.")
+            item["incident"].setdefault("checks", {})[check_id] = {"status": result, "note": (note or "").strip(), "updated_at": stamp, "definition": check["definition"]}
+            item["assessment"] = self.merge_checks(well, item["assessment"])
+            self.timeline(well, "checked", f"{check['label']}: {result.replace('_', ' ')}. Operator report; sensor state unchanged.")
+            self.state[well]["revision"] += 1
+            if self.status not in TERMINAL:
+                self.queue(well, "Reviewing the saved operator check")
+        elif action == "recheck":
+            if self.status in TERMINAL:
+                raise ValueError("This run has ended. Start a new replay to check new measurements.")
+            self.queue(well, "Operator requested an evidence recheck")
+        else:
+            raise ValueError("Unknown operator action")
+        if action != "acknowledge" and well in self.pending:
+            self._guide_operator_wells.add(well)
+            if self.mode == "guided" and self.status == "running" and not self._guide_settle:
+                self.begin_settling("operator_followup", self.guide_checkpoint("operator_followup", well))
+        self.audit.append({"kind": "operator_action", "well_id": well, "incident_id": item["incident"]["id"], "action": action, "note": note,
+                           "check_id": check_id, "result": result, "human_report_not_ground_truth": True, "at_index": self.index})
         self.publish("operator_action")
         self.wake.set()
 
 
 class Start(BaseModel):
-    speed: Literal[30, 60, 120] = 60
+    speed: Literal[12, 30, 60, 120] = 12
+    mode: Literal["guided", "continuous"] = "guided"
 
 
 class Control(BaseModel):
-    action: Literal["pause", "resume", "step", "cancel", "speed", "inject"]
-    speed: Literal[30, 60, 120] | None = None
+    action: Literal["pause", "resume", "step", "cancel", "speed", "inject", "next_moment", "mode"]
+    speed: Literal[12, 30, 60, 120] | None = None
+    mode: Literal["guided", "continuous"] | None = None
     well_id: str | None = None
     fault: Literal["pressure_offline", "restore"] | None = None
 
 
 class OperatorAction(BaseModel):
-    action: Literal["acknowledge", "observation", "complete"]
+    action: Literal["acknowledge", "observation", "complete", "check", "recheck"]
     note: str | None = Field(default=None, max_length=500)
+    check_id: str | None = Field(default=None, max_length=100)
+    result: Literal["confirmed", "not_confirmed", "unavailable"] | None = None
+    incident_id: str | None = Field(default=None, max_length=100)
+    check_definition: str | None = Field(default=None, max_length=64)
 
 
 def get_session(id):
@@ -516,12 +809,20 @@ def get_session(id):
 
 @router.get("/catalog")
 def catalog():
-    return {**capabilities(), "wells": [{"id": w, "name": empty_well(w)["name"], "source_file": ""} for w in WELLS], "default_speed": 60, "speeds": [30, 60, 120], "description": "Four historical recordings replayed together; map positions are illustrative."}
+    return {**capabilities(), "wells": [{"id": w, "name": empty_well(w)["name"], "source_file": ""} for w in WELLS],
+            "default_mode": "guided", "modes": ["guided", "continuous"], "default_speed": 12, "speeds": [12, 30, 60, 120],
+            "description": "Four historical recordings replayed together; map positions are illustrative."}
 
 
 @router.get("/results")
 def fleet_results():
     path = ROOT / "data/processed/research/fleet_report.json"
+    return json.loads(path.read_text()) if path.exists() else {"status": "not_run"}
+
+
+@router.get("/workflow-results")
+def workflow_results():
+    path = ROOT / "data/processed/research/fleet_workflow_report.json"
     return json.loads(path.read_text()) if path.exists() else {"status": "not_run"}
 
 
@@ -537,7 +838,7 @@ async def start(config: Start):
             break
         if SESSIONS[key].status in TERMINAL:
             del SESSIONS[key]
-    session = FleetSession(config.speed)
+    session = FleetSession(config.speed, mode=config.mode)
     SESSIONS[session.id] = session
     session.publish("created")
     session.task = asyncio.create_task(session.run())
@@ -563,7 +864,7 @@ async def control(id: str, command: Control):
 async def operator_action(id: str, well: str, command: OperatorAction):
     session = get_session(id)
     try:
-        session.operator_action(well, command.action, command.note)
+        session.operator_action(well, **command.model_dump())
     except ValueError as exc:
         raise HTTPException(422, str(exc))
     return session.snapshot()

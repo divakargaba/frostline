@@ -246,7 +246,7 @@ def backend_session(monkeypatch):
     monkeypatch.setattr(fleet, "capabilities", lambda: {"model_ready": True, "llm_configured": True, "readiness_message": "Test-only provider"})
     monkeypatch.setattr(fleet, "ATTEMPTS", deque())
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-only-unusable-key")
-    session = fleet.FleetSession()
+    session = fleet.FleetSession(use_llm=True)
     session.status = "running"
     session.bundle = {"model_id": "held-out-test-v1", "policy": {"activation_threshold": .5}}
     snap = snapshot()
