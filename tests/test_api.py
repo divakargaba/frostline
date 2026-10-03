@@ -98,3 +98,41 @@ def test_stream_record(tmp_path, monkeypatch):
     assert len(jsonl_files) >= 1
     content = jsonl_files[0].read_text()
     assert "tick" in content
+
+
+def test_stream_seed_with_agent():
+    """Stream seed with agent=true should emit watcher/agent events."""
+    # Seed data has hydrate events (label=1) starting around hour 150,
+    # so stream a range that includes the transition.
+    # The watcher uses fallback rules since no model/physics.
+    with client.stream("GET", "/stream/seed?speed=6000&from_minute=148&to_minute=160&agent=true") as r:
+        assert r.status_code == 200
+        text = r.read().decode()
+
+    events = _parse_sse(text)
+    event_types = [e.get("event") for e in events]
+
+    # Should have standard events
+    assert "tick" in event_types
+    assert "end" in event_types
+
+    # With agent enabled and the watcher fallback rule, we might get triggers
+    # depending on pressure. The test validates the stream doesn't crash.
+    # All events should have valid JSON data
+    for e in events:
+        if "data" in e:
+            json.loads(e["data"])  # must not raise
+
+
+def test_stream_without_agent():
+    """agent=false should produce only tick/phase/end events."""
+    with client.stream("GET", "/stream/seed?speed=6000&to_minute=5&agent=false") as r:
+        assert r.status_code == 200
+        text = r.read().decode()
+
+    events = _parse_sse(text)
+    event_types = set(e.get("event") for e in events)
+    # Should NOT have agent events
+    assert "tool_call" not in event_types
+    assert "tool_result" not in event_types
+    assert "decision" not in event_types

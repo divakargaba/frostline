@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -44,6 +45,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Thread pool for running LLM calls without blocking the event loop
+_executor = ThreadPoolExecutor(max_workers=2)
 
 
 def _has_physics() -> bool:
@@ -100,6 +104,8 @@ async def stream_well(
     to_minute: int | None = Query(default=None),
     cached: bool = Query(default=False),
     record: bool = Query(default=False),
+    agent: bool = Query(default=True),
+    pause_on_agent: bool = Query(default=True),
 ):
     """SSE stream of tick/phase_marker/end events for a well instance."""
 
@@ -128,12 +134,17 @@ async def stream_well(
         recording_path = config.DATA_DEMO / f"{instance_id}_{ts}.jsonl"
 
     return EventSourceResponse(
-        _stream_live(request, inst, speed, from_minute, end, recording_path)
+        _stream_live(request, inst, speed, from_minute, end, recording_path,
+                     agent_enabled=agent, pause_on_agent=pause_on_agent)
     )
 
 
-async def _stream_live(request, inst, speed, from_min, to_min, recording_path):
-    """Generate SSE events from replay instance."""
+async def _stream_live(request, inst, speed, from_min, to_min, recording_path,
+                       agent_enabled=True, pause_on_agent=True):
+    """Generate SSE events from replay instance, with watcher + agent."""
+    from src.watcher import Watcher
+    from src.tools import AgentContext
+
     event_id = 0
     delay = 1.0 / speed
     rec_file = None
@@ -141,6 +152,17 @@ async def _stream_live(request, inst, speed, from_min, to_min, recording_path):
         rec_file = open(recording_path, "w")
 
     prev_phase = None
+    watcher = Watcher()
+    well_id = inst.metadata.get("well_id", inst.metadata.get("instance_id", ""))
+    instance_id = inst.metadata.get("instance_id", "")
+    agent_decisions: list[dict] = []
+
+    def _emit(event_type: str, data: dict):
+        nonlocal event_id
+        event_id += 1
+        if rec_file:
+            rec_file.write(json.dumps({"type": event_type, "data": data}) + "\n")
+        return {"event": event_type, "id": str(event_id), "data": json.dumps(data)}
 
     try:
         for idx in range(from_min, to_min):
@@ -155,16 +177,10 @@ async def _stream_live(request, inst, speed, from_min, to_min, recording_path):
                 pm = {"t": tick_data["t"], "phase": phase}
                 try:
                     PhaseMarkerEvent(**pm)
-                    event_id += 1
-                    evt = {"type": "phase_marker", "data": pm}
-                    if rec_file:
-                        rec_file.write(json.dumps(evt) + "\n")
-                    yield {"event": "phase_marker", "id": str(event_id), "data": json.dumps(pm)}
+                    yield _emit("phase_marker", pm)
                 except Exception as e:
                     log.error("Phase marker validation: %s", e)
-                    event_id += 1
-                    err = {"t": tick_data["t"], "message": str(e)}
-                    yield {"event": "error", "id": str(event_id), "data": json.dumps(err)}
+                    yield _emit("error", {"t": tick_data["t"], "message": str(e)})
                 prev_phase = phase
 
             # Tick
@@ -178,30 +194,67 @@ async def _stream_live(request, inst, speed, from_min, to_min, recording_path):
             }
             try:
                 TickEvent(**tick_payload)
-                event_id += 1
-                evt = {"type": "tick", "data": tick_payload}
-                if rec_file:
-                    rec_file.write(json.dumps(evt) + "\n")
-                yield {"event": "tick", "id": str(event_id), "data": json.dumps(tick_payload)}
+                yield _emit("tick", tick_payload)
             except Exception as e:
                 log.error("Tick validation: %s", e)
-                event_id += 1
-                err = {"t": tick_data["t"], "message": str(e)}
-                yield {"event": "error", "id": str(event_id), "data": json.dumps(err)}
+                yield _emit("error", {"t": tick_data["t"], "message": str(e)})
+
+            # Watcher check
+            if agent_enabled:
+                trigger = watcher.check_tick(tick_data, well_id, idx)
+                if trigger:
+                    yield _emit("watch_trigger", {
+                        "t": trigger["t"],
+                        "reason": trigger["reason"],
+                        "score": trigger["score"],
+                    })
+
+                    # Run agent in thread pool
+                    ctx = AgentContext(
+                        instance_id=instance_id,
+                        well_id=well_id,
+                        minute_index=idx,
+                        df=inst.df,
+                        decisions=agent_decisions,
+                        thresholds=watcher.thresholds,
+                    )
+
+                    loop = asyncio.get_event_loop()
+                    try:
+                        from src.agent import run_agent
+                        agent_events = await loop.run_in_executor(
+                            _executor,
+                            lambda: list(run_agent(ctx, trigger))
+                        )
+
+                        for ae in agent_events:
+                            if await request.is_disconnected():
+                                break
+                            yield _emit(ae["type"], ae["data"])
+
+                            if ae["type"] == "decision":
+                                decision_data = ae["data"]
+                                agent_decisions.append(decision_data)
+                                watcher.record_decision(
+                                    well_id,
+                                    decision_data.get("decision", "DISMISS"),
+                                    idx,
+                                    score=trigger["score"],
+                                    recheck_min=decision_data.get("recheck_min"),
+                                )
+                    except Exception as e:
+                        log.error("Agent error: %s", e)
+                        yield _emit("error", {"t": tick_data["t"], "message": f"Agent error: {e}"})
 
             await asyncio.sleep(delay)
 
         # End event
-        event_id += 1
         end_data = {
             "t": datetime.now().isoformat(),
             "total_minutes": to_min - from_min,
             "instance_id": inst.metadata.get("instance_id", ""),
         }
-        evt = {"type": "end", "data": end_data}
-        if rec_file:
-            rec_file.write(json.dumps(evt) + "\n")
-        yield {"event": "end", "id": str(event_id), "data": json.dumps(end_data)}
+        yield _emit("end", end_data)
 
     finally:
         if rec_file:
