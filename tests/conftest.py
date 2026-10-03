@@ -9,6 +9,14 @@ import pandas as pd
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _no_saved_model(monkeypatch):
+    """Ignore any model trained locally in models/ so results match CI (which has none)."""
+    import src.model
+    monkeypatch.setattr(src.model, "MODEL_PATH", "models/__not_in_tests__.pkl")
+    monkeypatch.setattr(src.model, "_cached", None)
+
+
 @pytest.fixture
 def fake_3w_instance() -> pd.DataFrame:
     """A synthetic 3W-style instance with ~300 rows at 1-second intervals.

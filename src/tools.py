@@ -308,7 +308,19 @@ def tool_hydrate_margin(ctx: AgentContext) -> dict:
 
 def tool_classify_event(ctx: AgentContext) -> dict:
     """ML classification or heuristic fallback."""
-    # Try ModelAdapter first (models/frostline_v*/)
+    # Fast path: replay already scored the full history causally; use that minute's score.
+    if {"p_hydrate", "p_lookalike", "p_normal"} <= set(ctx.window.columns):
+        last = ctx.current
+        if _clean(last.get("p_hydrate")) is not None:
+            return {
+                "available": True,
+                "source": "ml_model",
+                "p_hydrate": _round(_clean(last["p_hydrate"])),
+                "p_lookalike": _round(_clean(last["p_lookalike"])),
+                "p_normal": _round(_clean(last["p_normal"])),
+            }
+
+    # Try ModelAdapter (models/frostline_v*/)
     adapter = get_model_adapter()
     if adapter.ready:
         w = ctx.window.tail(60).copy()
@@ -316,13 +328,13 @@ def tool_classify_event(ctx: AgentContext) -> dict:
         if result is not None:
             return {
                 "available": True,
-                "source": "model_score",  # NOT "probability" — scores are uncalibrated
+                "source": "model_score",
                 "p_hydrate": _round(result.get("p_hydrate", 0)),
                 "p_lookalike": _round(result.get("p_lookalike", 0)),
                 "p_normal": _round(result.get("p_normal", 0)),
             }
 
-    # Try src.model.predict (teammate's module)
+    # Direct src.model.predict call
     try:
         from src.model import predict as _predict
         w = ctx.window.tail(60).copy()

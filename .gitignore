@@ -23,6 +23,12 @@ frontend/dist/
 # OS
 .DS_Store
 
+# Logs
+logs/
+
+# Build artifacts
+*.tsbuildinfo
+
 # Artifacts
 *.parquet
 *.pkl

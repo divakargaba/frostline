@@ -38,6 +38,9 @@ LOG_PATH = "logs/load.log"
 SENSORS = [
     "P-PDG", "T-PDG", "P-TPT", "T-TPT", "P-MON-CKP",
     "P-JUS-CKP", "T-JUS-CKP", "ABER-CKP", "QGL",
+    # Topside temperature upstream of the production choke. Live in 13 of 14 real
+    # class-8 files (T-TPT only in 7), so it backs up the subsea temperature.
+    "T-MON-CKP",
 ]
 PRESSURE_SENSORS = [s for s in SENSORS if s.startswith("P-")]
 LABELS = ["class", "state"]
