@@ -1,0 +1,89 @@
+746761 labelled minutes, 1506 instances; development: 33 real wells; frozen test: WELL-00006, WELL-00019, WELL-00042
+
+[all] 143 features
+  fold 1/33 WELL-00001: 33425 min, 5s
+  fold 2/33 WELL-00002: 75211 min, 5s
+  fold 3/33 WELL-00003: 7745 min, 5s
+  fold 4/33 WELL-00004: 6767 min, 5s
+  fold 5/33 WELL-00005: 20955 min, 5s
+  fold 6/33 WELL-00007: 1447 min, 4s
+  fold 7/33 WELL-00008: 16860 min, 4s
+  fold 8/33 WELL-00010: 13445 min, 4s
+  fold 9/33 WELL-00014: 4515 min, 4s
+  fold 10/33 WELL-00015: 150 min, 5s
+  fold 11/33 WELL-00016: 1073 min, 4s
+  fold 12/33 WELL-00020: 64 min, 4s
+  fold 13/33 WELL-00021: 1465 min, 4s
+  fold 14/33 WELL-00022: 51250 min, 4s
+  fold 15/33 WELL-00023: 25780 min, 5s
+  fold 16/33 WELL-00024: 45228 min, 5s
+  fold 17/33 WELL-00025: 11978 min, 4s
+  fold 18/33 WELL-00026: 21413 min, 4s
+  fold 19/33 WELL-00027: 11281 min, 4s
+  fold 20/33 WELL-00028: 5364 min, 4s
+  fold 21/33 WELL-00029: 2395 min, 6s
+  fold 22/33 WELL-00030: 2633 min, 4s
+  fold 23/33 WELL-00031: 5983 min, 5s
+  fold 24/33 WELL-00032: 2178 min, 4s
+  fold 25/33 WELL-00033: 2463 min, 4s
+  fold 26/33 WELL-00034: 3113 min, 5s
+  fold 27/33 WELL-00035: 4342 min, 4s
+  fold 28/33 WELL-00036: 298 min, 4s
+  fold 29/33 WELL-00037: 1345 min, 4s
+  fold 30/33 WELL-00038: 2010 min, 5s
+  fold 31/33 WELL-00039: 984 min, 4s
+  fold 32/33 WELL-00040: 515 min, 4s
+  fold 33/33 WELL-00041: 16327 min, 5s
+    {'threshold': 0.3, 'caught': 17, 'late': 1, 'missed': 1, 'events': 19, 'caught_rate': 0.895, 'false_alarms_per_day': np.float64(1.762), 'false_alarms_per_day_normal_files': np.float64(0.575), 'false_alarms_per_day_event_lead_in': np.float64(6.093), 'mean_lead_time_min': 4180.8, 'median_lead_vs_form_min': -5.0, 'misdiagnosis_rate': 0.107, 'lookalike_events': 383, 'ambiguous_files_pct_time_in_alarm': np.float64(27.7)}
+    {'threshold': 0.4, 'caught': 17, 'late': 1, 'missed': 1, 'events': 19, 'caught_rate': 0.895, 'false_alarms_per_day': np.float64(1.388), 'false_alarms_per_day_normal_files': np.float64(0.435), 'false_alarms_per_day_event_lead_in': np.float64(4.864), 'mean_lead_time_min': 4011.1, 'median_lead_vs_form_min': -6.0, 'misdiagnosis_rate': 0.099, 'lookalike_events': 383, 'ambiguous_files_pct_time_in_alarm': np.float64(19.7)}
+    {'threshold': 0.5, 'caught': 16, 'late': 1, 'missed': 2, 'events': 19, 'caught_rate': 0.842, 'false_alarms_per_day': np.float64(1.167), 'false_alarms_per_day_normal_files': np.float64(0.477), 'false_alarms_per_day_event_lead_in': np.float64(3.686), 'mean_lead_time_min': 3878.6, 'median_lead_vs_form_min': -10.0, 'misdiagnosis_rate': 0.097, 'lookalike_events': 383, 'ambiguous_files_pct_time_in_alarm': np.float64(14.8)}
+    {'threshold': 0.6, 'caught': 15, 'late': 1, 'missed': 3, 'events': 19, 'caught_rate': 0.789, 'false_alarms_per_day': np.float64(0.859), 'false_alarms_per_day_normal_files': np.float64(0.407), 'false_alarms_per_day_event_lead_in': np.float64(2.509), 'mean_lead_time_min': 3871.6, 'median_lead_vs_form_min': -11.0, 'misdiagnosis_rate': 0.094, 'lookalike_events': 383, 'ambiguous_files_pct_time_in_alarm': np.float64(9.8)}
+    {'threshold': 0.7, 'caught': 14, 'late': 1, 'missed': 4, 'events': 19, 'caught_rate': 0.737, 'false_alarms_per_day': np.float64(0.694), 'false_alarms_per_day_normal_files': np.float64(0.407), 'false_alarms_per_day_event_lead_in': np.float64(1.741), 'mean_lead_time_min': 3867.8, 'median_lead_vs_form_min': -32.5, 'misdiagnosis_rate': 0.084, 'lookalike_events': 383, 'ambiguous_files_pct_time_in_alarm': np.float64(5.5)}
+    {'threshold': 0.8, 'caught': 13, 'late': 0, 'missed': 6, 'events': 19, 'caught_rate': 0.684, 'false_alarms_per_day': np.float64(0.529), 'false_alarms_per_day_normal_files': np.float64(0.407), 'false_alarms_per_day_event_lead_in': np.float64(0.973), 'mean_lead_time_min': 3862.3, 'median_lead_vs_form_min': -20.0, 'misdiagnosis_rate': 0.07, 'lookalike_events': 383, 'ambiguous_files_pct_time_in_alarm': np.float64(2.2)}
+    95% CI: {'caught_rate': [0.714, 1.0], 'false_alarms_per_day': [0.162, 4.405], 'false_alarms_per_day_normal_files': [0.0, 2.458], 'misdiagnosis_rate': [0.0, 0.364], 'mean_lead_time_min': [1465.567, 6393.778]}
+
+[relative] 91 features
+  fold 1/33 WELL-00001: 33425 min, 4s
+  fold 2/33 WELL-00002: 75211 min, 4s
+  fold 3/33 WELL-00003: 7745 min, 3s
+  fold 4/33 WELL-00004: 6767 min, 3s
+  fold 5/33 WELL-00005: 20955 min, 3s
+  fold 6/33 WELL-00007: 1447 min, 3s
+  fold 7/33 WELL-00008: 16860 min, 4s
+  fold 8/33 WELL-00010: 13445 min, 3s
+  fold 9/33 WELL-00014: 4515 min, 3s
+  fold 10/33 WELL-00015: 150 min, 3s
+  fold 11/33 WELL-00016: 1073 min, 3s
+  fold 12/33 WELL-00020: 64 min, 3s
+  fold 13/33 WELL-00021: 1465 min, 3s
+  fold 14/33 WELL-00022: 51250 min, 3s
+  fold 15/33 WELL-00023: 25780 min, 3s
+  fold 16/33 WELL-00024: 45228 min, 3s
+  fold 17/33 WELL-00025: 11978 min, 3s
+  fold 18/33 WELL-00026: 21413 min, 3s
+  fold 19/33 WELL-00027: 11281 min, 3s
+  fold 20/33 WELL-00028: 5364 min, 3s
+  fold 21/33 WELL-00029: 2395 min, 4s
+  fold 22/33 WELL-00030: 2633 min, 4s
+  fold 23/33 WELL-00031: 5983 min, 3s
+  fold 24/33 WELL-00032: 2178 min, 4s
+  fold 25/33 WELL-00033: 2463 min, 3s
+  fold 26/33 WELL-00034: 3113 min, 3s
+  fold 27/33 WELL-00035: 4342 min, 4s
+  fold 28/33 WELL-00036: 298 min, 4s
+  fold 29/33 WELL-00037: 1345 min, 4s
+  fold 30/33 WELL-00038: 2010 min, 4s
+  fold 31/33 WELL-00039: 984 min, 4s
+  fold 32/33 WELL-00040: 515 min, 4s
+  fold 33/33 WELL-00041: 16327 min, 4s
+    {'threshold': 0.3, 'caught': 18, 'late': 0, 'missed': 1, 'events': 19, 'caught_rate': 0.947, 'false_alarms_per_day': np.float64(1.707), 'false_alarms_per_day_normal_files': np.float64(0.491), 'false_alarms_per_day_event_lead_in': np.float64(6.144), 'mean_lead_time_min': 4118.9, 'median_lead_vs_form_min': 113.5, 'misdiagnosis_rate': 0.097, 'lookalike_events': 383, 'ambiguous_files_pct_time_in_alarm': np.float64(38.8)}
+    {'threshold': 0.4, 'caught': 17, 'late': 1, 'missed': 1, 'events': 19, 'caught_rate': 0.895, 'false_alarms_per_day': np.float64(1.443), 'false_alarms_per_day_normal_files': np.float64(0.463), 'false_alarms_per_day_event_lead_in': np.float64(5.017), 'mean_lead_time_min': 4571.1, 'median_lead_vs_form_min': 38.0, 'misdiagnosis_rate': 0.081, 'lookalike_events': 383, 'ambiguous_files_pct_time_in_alarm': np.float64(31.9)}
+    {'threshold': 0.5, 'caught': 17, 'late': 1, 'missed': 1, 'events': 19, 'caught_rate': 0.895, 'false_alarms_per_day': np.float64(1.443), 'false_alarms_per_day_normal_files': np.float64(0.505), 'false_alarms_per_day_event_lead_in': np.float64(4.864), 'mean_lead_time_min': 4498.9, 'median_lead_vs_form_min': 28.0, 'misdiagnosis_rate': 0.063, 'lookalike_events': 383, 'ambiguous_files_pct_time_in_alarm': np.float64(25.4)}
+    {'threshold': 0.6, 'caught': 16, 'late': 1, 'missed': 2, 'events': 19, 'caught_rate': 0.842, 'false_alarms_per_day': np.float64(1.597), 'false_alarms_per_day_normal_files': np.float64(0.688), 'false_alarms_per_day_event_lead_in': np.float64(4.915), 'mean_lead_time_min': 4472.9, 'median_lead_vs_form_min': 1.0, 'misdiagnosis_rate': 0.05, 'lookalike_events': 383, 'ambiguous_files_pct_time_in_alarm': np.float64(19.5)}
+    {'threshold': 0.7, 'caught': 16, 'late': 1, 'missed': 2, 'events': 19, 'caught_rate': 0.842, 'false_alarms_per_day': np.float64(1.828), 'false_alarms_per_day_normal_files': np.float64(0.94), 'false_alarms_per_day_event_lead_in': np.float64(5.069), 'mean_lead_time_min': 4437.4, 'median_lead_vs_form_min': -5.5, 'misdiagnosis_rate': 0.039, 'lookalike_events': 383, 'ambiguous_files_pct_time_in_alarm': np.float64(14.0)}
+    {'threshold': 0.8, 'caught': 16, 'late': 0, 'missed': 3, 'events': 19, 'caught_rate': 0.842, 'false_alarms_per_day': np.float64(1.927), 'false_alarms_per_day_normal_files': np.float64(1.109), 'false_alarms_per_day_event_lead_in': np.float64(4.915), 'mean_lead_time_min': 4224.9, 'median_lead_vs_form_min': -16.0, 'misdiagnosis_rate': 0.031, 'lookalike_events': 383, 'ambiguous_files_pct_time_in_alarm': np.float64(8.3)}
+    95% CI: {'caught_rate': [0.75, 1.0], 'false_alarms_per_day': [0.374, 4.334], 'false_alarms_per_day_normal_files': [0.0, 2.756], 'misdiagnosis_rate': [0.0, 0.239], 'mean_lead_time_min': [1958.17, 7112.102]}
+
+FINAL TEST (frozen wells): {'threshold': 0.5, 'caught': 8, 'late': 0, 'missed': 1, 'events': 9, 'caught_rate': 0.889, 'false_alarms_per_day': np.float64(2.294), 'false_alarms_per_day_normal_files': np.float64(1.671), 'false_alarms_per_day_event_lead_in': np.float64(6.273), 'mean_lead_time_min': 2657.6, 'median_lead_vs_form_min': -5.0, 'misdiagnosis_rate': 0.0, 'lookalike_events': 2, 'ambiguous_files_pct_time_in_alarm': np.float64(0.0)}
+
+chosen: relative; model saved; report -> results\model_cv.json

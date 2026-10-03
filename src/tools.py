@@ -177,7 +177,18 @@ def tool_hydrate_margin(ctx: AgentContext) -> dict:
 
 def tool_classify_event(ctx: AgentContext) -> dict:
     """ML classification or heuristic fallback."""
-    # Try ML first
+    # Replay already scored the full history causally; use that minute's score.
+    if {"p_hydrate", "p_lookalike", "p_normal"} <= set(ctx.window.columns):
+        last = ctx.current
+        if _clean(last.get("p_hydrate")) is not None:
+            return {
+                "available": True,
+                "source": "ml_model",
+                "p_hydrate": _round(_clean(last["p_hydrate"])),
+                "p_lookalike": _round(_clean(last["p_lookalike"])),
+                "p_normal": _round(_clean(last["p_normal"])),
+            }
+    # Otherwise score the recent window directly
     try:
         from src.model import predict as _predict
         w = ctx.window.tail(60).copy()

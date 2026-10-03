@@ -23,6 +23,11 @@ from backend.config import DATA_PROCESSED, DATA_RAW_3W, DATA_SEED
 
 log = logging.getLogger("frostline.replay")
 
+
+def _predict(df: pd.DataFrame) -> pd.DataFrame:
+    from src.model import predict
+    return predict(df)
+
 STANDARD_SENSORS = [
     "P-PDG", "T-PDG", "P-TPT", "T-TPT", "P-MON-CKP",
     "P-JUS-CKP", "T-JUS-CKP", "ABER-CKP", "QGL",
@@ -95,10 +100,16 @@ class ReplayInstance:
         except (ImportError, NotImplementedError):
             self.df["margin_C"] = None
 
-        # ML: predict
+        # ML: predict over the whole history at once (features and smoothing are causal).
+        # Skipped for the hourly seed CSV; the model is trained on 1-minute 3W data.
         self.df["p_hydrate"] = None
         self.df["p_lookalike"] = None
         self.df["p_normal"] = None
+        if self.metadata.get("source") != "seed":
+            pred = _safe_call(_predict, self.df)
+            if pred is not None:
+                for c in ("p_hydrate", "p_lookalike", "p_normal"):
+                    self.df[c] = pred[c].to_numpy()
 
     @property
     def n_minutes(self) -> int:
@@ -280,7 +291,8 @@ def list_available_instances() -> list[dict]:
             idx = pd.read_csv(index_path)
             for _, r in idx.iterrows():
                 iid = r["instance_id"]
-                if iid in seen:
+                # SIMULATED / DRAWN instances have no well and are training-only (CLAUDE.md).
+                if iid in seen or pd.isna(r.get("well_id")):
                     continue
                 seen.add(iid)
                 has_hydrate = int(r.get("event_class", 0)) in (8, 9)
