@@ -1,0 +1,130 @@
+{
+  "hydrate": [
+    {
+      "instance_id": "WELL-00019_20120601165020",
+      "well_id": "WELL-00019",
+      "score": 100,
+      "n_minutes": 3993,
+      "n_forming": 1936,
+      "n_established": 343,
+      "has_T_TPT": true,
+      "missing_frac": 0.0,
+      "reasons": [
+        "has T-TPT",
+        "1936 min forming",
+        "343 min established",
+        "0.0% missing",
+        "3993 total min"
+      ]
+    },
+    {
+      "instance_id": "WELL-00019_20141117190526",
+      "well_id": "WELL-00019",
+      "score": 100,
+      "n_minutes": 5184,
+      "n_forming": 4364,
+      "n_established": 137,
+      "has_T_TPT": true,
+      "missing_frac": 0.0,
+      "reasons": [
+        "has T-TPT",
+        "4364 min forming",
+        "137 min established",
+        "0.0% missing",
+        "5184 total min"
+      ]
+    },
+    {
+      "instance_id": "WELL-00019_20150614025713",
+      "well_id": "WELL-00019",
+      "score": 100,
+      "n_minutes": 2734,
+      "n_forming": 1825,
+      "n_established": 33,
+      "has_T_TPT": true,
+      "missing_frac": 0.0,
+      "reasons": [
+        "has T-TPT",
+        "1825 min forming",
+        "33 min established",
+        "0.0% missing",
+        "2734 total min"
+      ]
+    },
+    {
+      "instance_id": "WELL-00025_20200629194141",
+      "well_id": "WELL-00025",
+      "score": 100,
+      "n_minutes": 11978,
+      "n_forming": 9916,
+      "n_established": 632,
+      "has_T_TPT": true,
+      "missing_frac": 0.0,
+      "reasons": [
+        "has T-TPT",
+        "9916 min forming",
+        "632 min established",
+        "0.0% missing",
+        "11978 total min"
+      ]
+    },
+    {
+      "instance_id": "WELL-00030_20141108012623",
+      "well_id": "WELL-00030",
+      "score": 100,
+      "n_minutes": 2633,
+      "n_forming": 1969,
+      "n_established": 141,
+      "has_T_TPT": true,
+      "missing_frac": 0.0,
+      "reasons": [
+        "has T-TPT",
+        "1969 min forming",
+        "141 min established",
+        "0.0% missing",
+        "2633 total min"
+      ]
+    }
+  ],
+  "scaling": [
+    {
+      "instance_id": "WELL-00001_20170226130146",
+      "well_id": "WELL-00001",
+      "score": 30,
+      "n_minutes": 1218,
+      "has_T_TPT": true,
+      "missing_frac": 0.667,
+      "reasons": [
+        "has T-TPT",
+        "66.7% missing",
+        "1218 total min"
+      ]
+    },
+    {
+      "instance_id": "WELL-00006_20180618103000",
+      "well_id": "WELL-00006",
+      "score": 30,
+      "n_minutes": 2137,
+      "has_T_TPT": true,
+      "missing_frac": 0.667,
+      "reasons": [
+        "has T-TPT",
+        "66.7% missing",
+        "2137 total min"
+      ]
+    },
+    {
+      "instance_id": "WELL-00006_20180620152903",
+      "well_id": "WELL-00006",
+      "score": 30,
+      "n_minutes": 1888,
+      "has_T_TPT": true,
+      "missing_frac": 0.667,
+      "reasons": [
+        "has T-TPT",
+        "66.7% missing",
+        "1888 total min"
+      ]
+    }
+  ]
+}
