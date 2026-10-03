@@ -12,6 +12,7 @@ from src.tools import (
     get_window, tool_hydrate_margin, tool_classify_event,
     tool_forecast_onset, tool_methanol_dose, tool_well_history,
     tool_search_playbook, tool_check_sensor_quality, load_thresholds,
+    ModelAdapter, MODELS_DIR,
 )
 
 
@@ -302,3 +303,56 @@ class TestDataQuality:
         assert result["available"] is True
         assert "P-PDG" in result["flagged"]
         assert result["sensors"]["P-PDG"]["status"] == "extreme"
+
+
+class TestModelAdapter:
+    def test_no_models_dir(self, tmp_path, monkeypatch):
+        """No models/ dir -> adapter not ready with clear error."""
+        import src.tools
+        monkeypatch.setattr(src.tools, "MODELS_DIR", tmp_path / "nonexistent")
+        monkeypatch.setattr(src.tools, "_model_adapter", None)
+        adapter = ModelAdapter()
+        assert adapter.ready is False
+        assert "not found" in adapter.error
+
+    def test_missing_metadata(self, tmp_path, monkeypatch):
+        """Model dir without metadata.json -> error."""
+        import src.tools
+        model_dir = tmp_path / "models" / "frostline_v1"
+        model_dir.mkdir(parents=True)
+        (model_dir / "model.txt").write_text("dummy")
+        monkeypatch.setattr(src.tools, "MODELS_DIR", tmp_path / "models")
+        monkeypatch.setattr(src.tools, "_model_adapter", None)
+        adapter = ModelAdapter()
+        assert adapter.ready is False
+        assert "metadata" in adapter.error
+
+    def test_watcher_overrides(self, tmp_path, monkeypatch):
+        """Metadata with alarm_threshold should produce watcher overrides."""
+        import src.tools
+        model_dir = tmp_path / "models" / "frostline_v1"
+        model_dir.mkdir(parents=True)
+        (model_dir / "model.txt").write_text("dummy")
+        meta = {
+            "version": 1,
+            "feature_order": ["f1", "f2"],
+            "classes": ["normal", "hydrate"],
+            "class_map": {"0": "normal", "1": "hydrate"},
+            "alarm_threshold": 0.6,
+            "alarm_persistence_min": 5,
+        }
+        (model_dir / "metadata.json").write_text(json.dumps(meta))
+        monkeypatch.setattr(src.tools, "MODELS_DIR", tmp_path / "models")
+        monkeypatch.setattr(src.tools, "_model_adapter", None)
+        # Won't be ready (lightgbm can't load "dummy") but metadata is parsed
+        adapter = ModelAdapter()
+        overrides = adapter.watcher_overrides()
+        assert overrides.get("watch_threshold") == 0.6
+        assert overrides.get("alarm_persistence_min") == 5
+
+    def test_classify_uses_heuristic_without_model(self):
+        """classify_event should use heuristic when no model is available."""
+        ctx = _make_ctx()
+        result = tool_classify_event(ctx)
+        assert result["available"] is True
+        assert result["source"] == "heuristic_fallback"

@@ -22,6 +22,7 @@ import pandas as pd
 log = logging.getLogger("frostline.tools")
 
 THRESHOLDS_PATH = Path("data/state/thresholds.json")
+MODELS_DIR = Path("models")
 TRIGGER_LOG_PATH = Path("data/state/trigger_log.jsonl")
 
 DEFAULT_THRESHOLDS = {
@@ -64,6 +65,135 @@ class AgentContext:
     @property
     def current(self) -> pd.Series:
         return self.df.iloc[self.minute_index]
+
+
+# ---------------------------------------------------------------------------
+# Model adapter — auto-loads newest models/frostline_v*/
+# ---------------------------------------------------------------------------
+
+class ModelAdapter:
+    """Loads and wraps a LightGBM model from models/frostline_v<N>/."""
+
+    def __init__(self):
+        self.model = None
+        self.metadata: dict = {}
+        self.feature_order: list[str] = []
+        self.classes: list[str] = []
+        self.class_map: dict[str, str] = {}
+        self.ready = False
+        self.error: str = ""
+        self._load()
+
+    def _load(self):
+        if not MODELS_DIR.exists():
+            self.error = "models/ directory not found"
+            return
+        versions = sorted(MODELS_DIR.glob("frostline_v*/"), key=lambda p: p.name)
+        if not versions:
+            self.error = "no frostline_v*/ directories found"
+            return
+        model_dir = versions[-1]  # newest
+        meta_path = model_dir / "metadata.json"
+        model_path = model_dir / "model.txt"
+
+        if not meta_path.exists():
+            self.error = f"metadata.json missing in {model_dir.name}"
+            return
+        if not model_path.exists():
+            self.error = f"model.txt missing in {model_dir.name}"
+            return
+
+        try:
+            self.metadata = json.loads(meta_path.read_text())
+        except Exception as e:
+            self.error = f"metadata.json invalid: {e}"
+            return
+
+        self.feature_order = self.metadata.get("feature_order", [])
+        self.classes = self.metadata.get("classes", [])
+        self.class_map = self.metadata.get("class_map", {})
+
+        if not self.feature_order:
+            self.error = "metadata.json missing feature_order"
+            return
+        if not self.classes or len(self.classes) < 2:
+            self.error = "metadata.json missing or invalid classes (need 2+)"
+            return
+
+        try:
+            import lightgbm as lgb
+            self.model = lgb.Booster(model_file=str(model_path))
+            self.ready = True
+            log.info("Loaded model from %s (%d features, %d classes)",
+                     model_dir.name, len(self.feature_order), len(self.classes))
+        except ImportError:
+            self.error = "lightgbm not installed"
+        except Exception as e:
+            self.error = f"model load failed: {e}"
+
+    def predict(self, window_df: pd.DataFrame) -> dict | None:
+        """Predict on the last row of window_df. Returns {p_hydrate, p_lookalike, p_normal}."""
+        if not self.ready or self.model is None:
+            return None
+
+        # Build feature array from the last row
+        last = window_df.iloc[-1:]
+        missing = [f for f in self.feature_order if f not in last.columns]
+        if missing:
+            log.warning("Model missing features: %s", missing[:5])
+            return None
+
+        X = last[self.feature_order].values
+        try:
+            proba = self.model.predict(X)
+        except Exception as e:
+            log.error("Model predict failed: %s", e)
+            return None
+
+        # Map to standard output
+        result: dict[str, float] = {"p_hydrate": 0.0, "p_lookalike": 0.0, "p_normal": 0.0}
+        if len(self.classes) == 2:
+            # Binary: [normal, hydrate] or single score
+            if proba.ndim == 1:
+                score = float(proba[0])
+            else:
+                score = float(proba[0][1]) if proba.shape[1] > 1 else float(proba[0][0])
+            result["p_hydrate"] = score
+            result["p_normal"] = 1.0 - score
+        elif len(self.classes) >= 3:
+            # Multi-class
+            if proba.ndim == 1:
+                proba = proba.reshape(1, -1)
+            for i, cls in enumerate(self.classes):
+                mapped = self.class_map.get(str(i), cls).lower()
+                if "hydrate" in mapped:
+                    result["p_hydrate"] = float(proba[0][i])
+                elif "lookalike" in mapped or "look" in mapped:
+                    result["p_lookalike"] = float(proba[0][i])
+                elif "normal" in mapped:
+                    result["p_normal"] = float(proba[0][i])
+        return result
+
+    def watcher_overrides(self) -> dict:
+        """Return threshold overrides from model metadata."""
+        overrides = {}
+        if "alarm_threshold" in self.metadata:
+            overrides["watch_threshold"] = self.metadata["alarm_threshold"]
+        if "alarm_persistence_min" in self.metadata:
+            # Not directly in DEFAULT_THRESHOLDS but watcher can use it
+            overrides["alarm_persistence_min"] = self.metadata["alarm_persistence_min"]
+        return overrides
+
+
+# Global model adapter instance
+_model_adapter: ModelAdapter | None = None
+
+
+def get_model_adapter() -> ModelAdapter:
+    global _model_adapter
+    if _model_adapter is None:
+        _model_adapter = ModelAdapter()
+    return _model_adapter
 
 
 def _clean(v: Any) -> Any:
@@ -177,7 +307,21 @@ def tool_hydrate_margin(ctx: AgentContext) -> dict:
 
 def tool_classify_event(ctx: AgentContext) -> dict:
     """ML classification or heuristic fallback."""
-    # Try ML first
+    # Try ModelAdapter first (models/frostline_v*/)
+    adapter = get_model_adapter()
+    if adapter.ready:
+        w = ctx.window.tail(60).copy()
+        result = adapter.predict(w)
+        if result is not None:
+            return {
+                "available": True,
+                "source": "model_score",  # NOT "probability" — scores are uncalibrated
+                "p_hydrate": _round(result.get("p_hydrate", 0)),
+                "p_lookalike": _round(result.get("p_lookalike", 0)),
+                "p_normal": _round(result.get("p_normal", 0)),
+            }
+
+    # Try src.model.predict (teammate's module)
     try:
         from src.model import predict as _predict
         w = ctx.window.tail(60).copy()
@@ -186,7 +330,7 @@ def tool_classify_event(ctx: AgentContext) -> dict:
             last = result.iloc[-1]
             return {
                 "available": True,
-                "source": "ml_model",
+                "source": "model_score",
                 "p_hydrate": _round(_clean(last.get("p_hydrate", 0))),
                 "p_lookalike": _round(_clean(last.get("p_lookalike", 0))),
                 "p_normal": _round(_clean(last.get("p_normal", 0))),

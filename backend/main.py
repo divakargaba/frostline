@@ -62,10 +62,28 @@ def _has_physics() -> bool:
 
 def _has_model() -> bool:
     try:
+        from src.tools import get_model_adapter
+        adapter = get_model_adapter()
+        if adapter.ready:
+            return True
+    except Exception:
+        pass
+    try:
         from src.model import predict  # noqa: F401
         return True
     except (ImportError, NotImplementedError, AttributeError):
         return False
+
+
+def _model_status() -> str:
+    try:
+        from src.tools import get_model_adapter
+        adapter = get_model_adapter()
+        if adapter.ready:
+            return f"loaded ({len(adapter.classes)} classes)"
+        return adapter.error or "not loaded"
+    except Exception:
+        return "adapter error"
 
 
 def _llm_mode() -> str:
@@ -78,8 +96,10 @@ def _llm_mode() -> str:
 
 @app.get("/health")
 async def health():
-    from src.llm import get_usage_tracker
+    from src.llm import get_usage_tracker, _get_or_build_pool
     usage = get_usage_tracker().summary()
+    pool = _get_or_build_pool()
+    providers = pool.provider_status() if pool else []
     return {
         "status": "ok",
         "has_processed": DATA_PROCESSED.exists() and (DATA_PROCESSED / "index.csv").exists(),
@@ -87,8 +107,10 @@ async def health():
         "has_seed": (DATA_SEED / "well_hydrate_seed.csv").exists(),
         "has_physics": _has_physics(),
         "has_model": _has_model(),
+        "model_status": _model_status(),
         "llm_mode": _llm_mode(),
         "llm_model": OPENROUTER_MODEL if _llm_mode() == "openrouter" else "mock",
+        "llm_providers": providers,
         "llm_usage": usage,
     }
 
