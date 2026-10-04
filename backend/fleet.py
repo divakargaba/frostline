@@ -9,6 +9,7 @@ from functools import lru_cache
 import json
 import hashlib
 import math
+import os
 from pathlib import Path
 import time
 from typing import Literal
@@ -31,6 +32,7 @@ RANK = {"attention": 0, "unavailable": 1, "watch": 2, "normal": 3}
 TERMINAL = {"completed", "cancelled", "failed"}
 SPEEDS = [12, 30, 60, 120]
 TOTAL = 180
+MIN_INVESTIGATION_GAP = 90  # replay minutes between automatic investigations per well
 # Provider-pool calls include pacing and slower hosted models, so they get a wider window than direct OpenRouter.
 LLM_ATTEMPT_SECONDS, LLM_DEADLINE_SECONDS = 20.0, 45.0
 SESSIONS: dict[str, "FleetSession"] = {}
@@ -149,7 +151,8 @@ class FleetSession:
         self.jobs: dict[str, asyncio.Task] = {}
         self.history = {}
         self.sources = {}
-        self.state = {w: {"alarm": {}, "other_run": 0, "other_active": False, "other_recovery": 0, "normal_run": 0, "agent_status": "normal", "base_status": "unavailable", "revision": 0, "due": 0, "last_score": None, "revision_score": None, "revision_pressure": None, "last_quality": None, "last_investigation_index": -100, "priorities": []} for w in WELLS}
+        self.state = {w: {"alarm": {}, "other_run": 0, "other_active": False, "other_recovery": 0, "normal_run": 0, "agent_status": "normal", "base_status": "unavailable", "revision": 0, "due": 0, "last_score": None, "revision_score": None, "revision_pressure": None, "last_quality": None, "last_investigation_index": -100, "last_investigation_category": None, "last_investigation_status": None, "priorities": []} for w in WELLS}
+        self.llm_investigations_used = 0
         self.bundle = None
         self.requests_used = 0
         self.request_budget = FLEET_LLM_MAX
@@ -178,7 +181,7 @@ class FleetSession:
         return {"id": self.id, "status": self.status, "speed": self.speed, "elapsed_seconds": self.index * 60, "index": self.index, "total": TOTAL,
                 "agent_mode": "live" if self.live_verified else "rules", "use_llm": self.use_llm, **caps, "wells": wells,
                 "priority": self.priority(), "last_event_id": len(self.events), "requests_used": self.requests_used,
-                "request_budget": self.request_budget, "error": self.error}
+                "request_budget": self.request_budget, "llm_investigations_used": self.llm_investigations_used, "llm_investigation_cap": FLEET_LLM_MAX, "error": self.error}
 
     def publish(self, reason="update"):
         event_id = len(self.events) + 1
@@ -209,6 +212,28 @@ class FleetSession:
         from src.fleet_policy import operator_assessment
         assessment = operator_assessment(result, self.history[well], status, self.state[well], self.bundle["policy"])
         return self.merge_checks(well, assessment)
+
+    def should_investigate(self, well, status, previous, material, assessment, operator_request=False):
+        """Gate investigations to prevent flooding."""
+        state = self.state[well]
+        gap = self.index - state["last_investigation_index"]
+        category = assessment.get("category", assessment.get("scenario", "monitoring"))
+        if operator_request:
+            return True
+        if status == "attention" and RANK.get(state.get("last_investigation_status", previous), 3) > RANK["attention"]:
+            return True
+        last_cat = state.get("last_investigation_category")
+        if last_cat is not None and category != last_cat and category not in ("normal", "monitoring"):
+            return True
+        if state["last_investigation_index"] <= 0:
+            return True
+        if gap < MIN_INVESTIGATION_GAP:
+            return False
+        if material and status != state.get("last_investigation_status"):
+            return True
+        if self.index >= state["due"] and status != "normal":
+            return True
+        return False
 
     def queue(self, well, reason):
         self.pending.add(well)
@@ -319,12 +344,17 @@ class FleetSession:
             elif item["incident"] and not item["incident"].get("condition_cleared"):
                 item["incident"]["condition_cleared"] = True
                 self.timeline(well, "recovered", "Available measurements now meet the monitoring recovery rules.")
-                self.queue(well, "Checking recovery against the earlier concern")
+                if state.get("last_investigation_status") == "attention" and self.index - state["last_investigation_index"] >= MIN_INVESTIGATION_GAP:
+                    self.queue(well, "Checking recovery against the earlier concern")
             due = self.index >= state["due"]
-            if status != "normal" and (material or (due and well not in self.jobs)):
-                self.queue(well, "Investigating changed evidence" if material else "Scheduled reassessment")
-            elif due and not self.use_llm and well not in self.jobs:
-                self.queue(well, "Scheduled review of normal measurements")
+            first_assessment = state["last_investigation_index"] <= -100
+            if first_assessment and well not in self.jobs:
+                self.queue(well, "Initial assessment")
+            elif status != "normal" and well not in self.jobs:
+                if self.should_investigate(well, status, previous, material, monitored["assessment"]):
+                    self.queue(well, "Investigating changed evidence" if material else "Scheduled reassessment")
+                elif due:
+                    state["due"] = self.index + monitored["recheck_minutes"]
             elif due:
                 state["due"] = self.index + monitored["recheck_minutes"]
             state["result"] = result
@@ -347,7 +377,7 @@ class FleetSession:
         now = time.monotonic()
         while ATTEMPTS and now - ATTEMPTS[0] >= 60:
             ATTEMPTS.popleft()
-        if self.status in TERMINAL or self.requests_used >= self.request_budget or len(ATTEMPTS) >= 10 or now < PROVIDER_CIRCUIT["until"]:
+        if self.status in TERMINAL or self.requests_used >= self.request_budget or len(ATTEMPTS) >= 10 or now < PROVIDER_CIRCUIT["until"] or self.llm_investigations_used >= FLEET_LLM_MAX:
             return False
         self.requests_used += 1
         ATTEMPTS.append(now)
@@ -357,6 +387,8 @@ class FleetSession:
         state, item = self.state[well], self.wells[well]
         state["due"] = max(0, self.index - 1) + recheck
         state["last_investigation_index"] = self.index
+        state["last_investigation_category"] = (item.get("assessment") or {}).get("category", (item.get("assessment") or {}).get("scenario"))
+        state["last_investigation_status"] = item["status"]
         item["next_check"] = (pd.Timestamp(item["source_timestamp"]) + pd.Timedelta(minutes=recheck)).isoformat()
         item["last_assessed"] = as_of
 
@@ -472,6 +504,8 @@ class FleetSession:
                 item["investigation"] = "unavailable"
                 item["activity"] = PROVIDER_CIRCUIT["reason"] if time.monotonic() < PROVIDER_CIRCUIT["until"] else metadata.get("failure_reason") or "Numerical assessment · LLM unavailable"
             self.schedule_recheck(well, max(1, min(60, int(result.get("recheck_minutes", 15)))), snapshot["as_of"])
+            if live:
+                self.llm_investigations_used += 1
             self.finish_followup(well, before, trigger)
             state["priorities"].append({"as_of": snapshot["as_of"], "brief": result.get("brief"), "status": item["status"], "source": result.get("source")})
             self.publish("assessment")
@@ -762,3 +796,19 @@ async def export(id: str):
               for event in session.events]
     payload = {"run": session.snapshot(), "audit": session.audit, "events": events, "method": "Four independent historical excerpts. Labels are excluded from runtime."}
     return Response(json.dumps(safe(payload), separators=(",", ":"), allow_nan=False), media_type="application/json", headers={"Content-Disposition": f'attachment; filename="frostline-fleet-{id[:8]}.json"'})
+
+
+class TTSRequest(BaseModel):
+    text: str = Field(..., min_length=1, max_length=500)
+
+
+@router.post("/tts")
+async def tts(body: TTSRequest):
+    from backend.tts import synthesize
+    try:
+        audio = await synthesize(body.text)
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc))
+    except Exception:
+        raise HTTPException(502, "TTS synthesis failed")
+    return Response(audio, media_type="audio/mpeg")

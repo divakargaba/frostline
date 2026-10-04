@@ -1,3 +1,19 @@
+/* ── Animations ── */
+@keyframes attention-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(189, 90, 67, 0.35); }
+  50% { box-shadow: 0 0 0 14px rgba(189, 90, 67, 0); }
+}
+@keyframes pipeline-flow {
+  to { stroke-dashoffset: -24; }
+}
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes spin-slow {
+  to { transform: rotate(360deg); }
+}
+
 .fleet-dashboard {
   --fleet-green: #198977;
   --fleet-red: #bd5a43;
@@ -253,6 +269,7 @@
   padding: 0;
   gap: 7px;
   z-index: 2;
+  transition: transform 0.3s, filter 0.3s;
 }
 .fleet-node .fleet-node-symbol {
   width: 46px;
@@ -274,11 +291,16 @@
   color: var(--fleet-red);
   background: #fff9ef;
   box-shadow: 0 0 0 13px #bd5a4310;
+  animation: attention-pulse 2.4s ease-in-out infinite;
 }
 .fleet-node.unavailable .fleet-node-symbol {
   color: #87949b;
   background: #f2f5f3;
   border-style: dashed;
+}
+.fleet-node.selected {
+  transform: translate(-50%, -50%) scale(1.08);
+  filter: drop-shadow(0 2px 8px rgba(25, 137, 119, 0.18));
 }
 .fleet-node.selected .fleet-node-symbol {
   box-shadow:
@@ -362,6 +384,31 @@
   align-items: center;
   gap: 5px;
 }
+/* Glass overlays on map */
+.fleet-map-label,
+.fleet-map-legend,
+.fleet-clock {
+  backdrop-filter: blur(8px);
+  background: rgba(252, 255, 245, 0.75);
+  border-radius: 7px;
+  padding: 6px 10px;
+}
+/* Pipeline animation when replay is running */
+.fleet-map.fleet-alive .fleet-map-art g[stroke="#a4c6b2"] path,
+.fleet-map.fleet-alive .fleet-map-art g[stroke="#779f8a"] path {
+  stroke-dasharray: 8 16;
+  animation: pipeline-flow 1.2s linear infinite;
+}
+/* Chart entry animation on well switch */
+.fleet-charts.fleet-entering .fleet-chart {
+  animation: fade-up 0.35s ease-out both;
+}
+.fleet-charts.fleet-entering .fleet-chart:nth-child(2) {
+  animation-delay: 0.06s;
+}
+.fleet-charts.fleet-entering .fleet-chart:nth-child(3) {
+  animation-delay: 0.12s;
+}
 .fleet-dot {
   display: inline-block;
   width: 8px;
@@ -387,6 +434,10 @@
   border: 1px solid #e0e7df;
   border-radius: 12px;
   overflow: hidden;
+  transition: box-shadow 0.25s;
+}
+.fleet-card:hover {
+  box-shadow: 0 4px 20px rgba(30, 80, 60, 0.06);
 }
 .fleet-card-heading {
   padding: 19px 20px 0;
@@ -492,6 +543,7 @@
   border: 1px solid transparent;
   border-radius: 8px;
   align-items: center;
+  transition: all 0.2s;
 }
 .fleet-queue-item:hover,
 .fleet-queue-item.selected {
@@ -559,15 +611,17 @@
 .fleet-assessment {
   padding: 19px 20px;
 }
-.fleet-assessment .fleet-eyebrow {
-  font-size: 11px;
+.fleet-assessment .fleet-assessment-well {
+  font-size: 12px;
   margin-bottom: 10px;
   display: flex;
   align-items: center;
   gap: 6px;
+  color: #728c85;
+  font-weight: 600;
 }
 .fleet-assessment h3 {
-  font-size: 16px;
+  font-size: 15px;
   line-height: 1.45;
   letter-spacing: -0.25px;
   margin: 12px 0 13px;
@@ -587,7 +641,7 @@
 .fleet-evidence-list li {
   display: flex;
   gap: 7px;
-  font-size: 11px;
+  font-size: 13px;
   line-height: 1.6;
   color: #849881;
 }
@@ -1702,6 +1756,52 @@
   .fleet-result-details {
     padding: 0 18px 18px;
   }
+}
+/* Voice controls */
+.fleet-voice-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+.fleet-voice-controls button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 6px 10px;
+  border-radius: 7px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid #dbe5dd;
+  background: #fff;
+  color: #3b625a;
+  transition: background 0.15s;
+}
+.fleet-voice-controls button:hover {
+  background: #edf3ec;
+}
+.fleet-voice-controls button.active {
+  background: #1a7465;
+  color: #fff;
+  border-color: #1a7465;
+}
+.fleet-voice-controls button.recording {
+  background: var(--fleet-red);
+  color: #fff;
+  border-color: var(--fleet-red);
+  animation: attention-pulse 1.5s ease-in-out infinite;
+}
+.fleet-speaker-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fleet-green);
+  font-size: 11px;
+  margin-left: 6px;
+}
+.fleet-speaker-icon svg {
+  animation: spin-slow 2s linear infinite;
 }
 @media (prefers-reduced-motion: reduce) {
   .fleet-dashboard * {

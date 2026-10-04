@@ -20,9 +20,9 @@ const nav = [
 ] as const;
 type Page = (typeof nav)[number]["id"];
 const stats = [
-  ["5 → 10", "events caught (of 12)"],
-  ["0", "false alarms added"],
-  ["100%", "3W hydrate recall"],
+  ["5 → 10", "events caught of 12 (3W holdout)"],
+  ["0", "false alarms added by policy"],
+  ["9 of 9", "3W hydrate wells detected"],
 ];
 
 function App() {

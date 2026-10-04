@@ -170,16 +170,17 @@ def test_running_review_has_no_duplicate_and_rechecks_at_exact_five_minutes(monk
         assert well not in session.pending
         assert well not in session.jobs
 
+        # The LLM requested a 5-minute recheck but flood protection enforces
+        # MIN_INVESTIGATION_GAP (90 min). The well should NOT be queued at 5 min.
         assessed_at = pd.Timestamp(session.wells[well]["source_timestamp"])
         due_at = pd.Timestamp(session.wells[well]["next_check"])
         assert due_at - assessed_at == pd.Timedelta(minutes=5)
         for _ in range(4):
             session.advance()
             assert well not in session.pending
-            assert pd.Timestamp(session.wells[well]["source_timestamp"]) < due_at
         session.advance()
-        assert pd.Timestamp(session.wells[well]["source_timestamp"]) == due_at
-        assert well in session.pending
+        # Flood protection suppresses the 5-min recheck; verify it's NOT queued
+        assert well not in session.pending, "Flood protection should suppress 5-min recheck"
 
     asyncio.run(scenario())
 
@@ -441,6 +442,72 @@ def test_outage_review_trace_reports_abstention_instead_of_invented_scores():
     asyncio.run(scenario())
 
 
+def test_flood_protection_limits_investigations():
+    """Dry run of 4-well demo should produce <=15 total investigations."""
+    async def scenario():
+        session = FleetSession(speed=120)
+        await session.prepare()
+        session.status = "running"
+        investigation_count = {w: 0 for w in WELLS}
+        for _ in range(180):
+            session.advance()
+            session.dispatch()
+            while session.jobs or session.pending:
+                session.dispatch()
+                for well, task in list(session.jobs.items()):
+                    try:
+                        await asyncio.wait_for(task, timeout=5)
+                    except Exception:
+                        pass
+        for entry in session.audit:
+            if entry.get("kind") == "assessment":
+                w = entry.get("well_id")
+                if w:
+                    investigation_count[w] = investigation_count.get(w, 0) + 1
+        total = sum(investigation_count.values())
+        assert investigation_count["WELL-00001"] <= 1, f"WELL-00001 should have at most 1, got {investigation_count['WELL-00001']}"
+        assert investigation_count["WELL-00002"] <= 4, f"WELL-00002 over limit: {investigation_count['WELL-00002']}"
+        assert investigation_count["WELL-00006"] <= 4, f"WELL-00006 over limit: {investigation_count['WELL-00006']}"
+        assert total <= 15, f"Total {total} exceeds flood limit"
+    asyncio.run(scenario())
+
+
+def test_llm_investigation_cap():
+    """Session cap on LLM investigations is enforced."""
+    from backend.fleet import FLEET_LLM_MAX
+    async def scenario():
+        session = FleetSession()
+        session.llm_investigations_used = FLEET_LLM_MAX
+        assert not await session.reserve_attempt()
+    asyncio.run(scenario())
+
+
+def test_operator_recheck_bypasses_gap():
+    """Operator recheck should queue immediately regardless of gap."""
+    session = ready()
+    session.status = "running"
+    session.advance()
+    well = "WELL-00019"
+    for _ in range(40):
+        session.advance()
+    session.pending.discard(well)
+    session.jobs.pop(well, None)
+    session.operator_action(well, "recheck", None)
+    assert well in session.pending, "Operator recheck should bypass investigation gap"
+
+
+def test_escalation_to_attention_triggers_investigation():
+    """A genuine escalation from watch to attention should queue an investigation."""
+    session = ready()
+    session.status = "running"
+    queued_wells = set()
+    for _ in range(40):
+        before = set(session.pending)
+        session.advance()
+        queued_wells.update(session.pending - before)
+    assert "WELL-00019" in queued_wells, "WELL-00019 escalation should queue an investigation"
+
+
 def test_recurring_checks_do_not_erase_incident_milestones():
     session = FleetSession()
     well = WELLS[0]
@@ -457,7 +524,8 @@ def test_recurring_checks_do_not_erase_incident_milestones():
 
 
 SNAPSHOT_KEYS = {"id", "status", "speed", "elapsed_seconds", "index", "total", "agent_mode", "use_llm", "llm_configured", "llm_providers",
-                 "model_ready", "readiness_message", "wells", "priority", "last_event_id", "requests_used", "request_budget", "error"}
+                 "model_ready", "readiness_message", "wells", "priority", "last_event_id", "requests_used", "request_budget",
+                 "llm_investigations_used", "llm_investigation_cap", "error"}
 
 
 def test_snapshot_contract_has_no_guided_or_fault_fields():
