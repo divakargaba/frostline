@@ -14,14 +14,16 @@ import {
   Gauge,
   LoaderCircle,
   MessageSquare,
+  Mic,
   Pause,
   Play,
-  Radio,
   RotateCcw,
   ShieldCheck,
   SkipForward,
   Sparkles,
   Thermometer,
+  Volume2,
+  VolumeX,
   X,
 } from "lucide-react";
 import {
@@ -228,7 +230,7 @@ const FieldMap = memo(function FieldMap({
   ];
   return (
     <div
-      className="fleet-map"
+      className={`fleet-map${run?.status === "running" ? " fleet-alive" : ""}`}
       aria-label="Illustrative field map with four wells"
     >
       <svg
@@ -824,6 +826,14 @@ export default function FleetDashboard() {
   const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [observing, setObserving] = useState(false);
   const [note, setNote] = useState("");
+  const [chartEntering, setChartEntering] = useState(false);
+  const [voiceMuted, setVoiceMuted] = useState(false);
+  const [voicePlaying, setVoicePlaying] = useState(false);
+  const [listening, setListening] = useState(false);
+  const voiceRef = useRef<HTMLAudioElement | null>(null);
+  const spokenIncidents = useRef<Set<string>>(new Set());
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const recognitionRef = useRef<any>(null);
   const lastEvent = useRef(-1);
   const source = useRef<EventSource | null>(null);
   const selectedRef = useRef(selected);
@@ -871,7 +881,40 @@ export default function FleetDashboard() {
   useEffect(() => {
     setObserving(false);
     setNote("");
+    setChartEntering(true);
+    const timer = setTimeout(() => setChartEntering(false), 400);
+    return () => clearTimeout(timer);
   }, [selected]);
+  // Voice alert: auto-play TTS when a well transitions to attention
+  useEffect(() => {
+    if (voiceMuted || !run) return;
+    for (const w of run.wells) {
+      if (w.status === "attention" && w.incident && w.assessment?.summary && !spokenIncidents.current.has(w.incident.id)) {
+        spokenIncidents.current.add(w.incident.id);
+        const text = `Alert on ${w.name}. ${w.assessment.summary}`;
+        fetch("/api/fleet/tts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: text.slice(0, 500) }),
+        })
+          .then((r) => (r.ok ? r.blob() : null))
+          .then((blob) => {
+            if (!blob) return;
+            const url = URL.createObjectURL(blob);
+            const audio = new Audio(url);
+            voiceRef.current = audio;
+            setVoicePlaying(true);
+            audio.onended = () => {
+              setVoicePlaying(false);
+              URL.revokeObjectURL(url);
+            };
+            audio.play().catch(() => setVoicePlaying(false));
+          })
+          .catch(() => {});
+        break;
+      }
+    }
+  }, [run?.wells, voiceMuted]);
   useEffect(() => {
     if (!sessionId) return;
     let disposed = false;
@@ -1184,7 +1227,6 @@ export default function FleetDashboard() {
     >
       <header className="fleet-header">
         <div>
-          <div className="fleet-eyebrow">FROSTLINE · HYDRATE DETECTION</div>
           <h1>{headerStatus}</h1>
         </div>
         <div className="fleet-controls">
@@ -1264,6 +1306,21 @@ export default function FleetDashboard() {
             <SkipForward size={15} />
             +1 min
           </button>
+          <button
+            className={`fleet-button icon${voiceMuted ? "" : " active"}`}
+            aria-label={voiceMuted ? "Unmute voice alerts" : "Mute voice alerts"}
+            title={voiceMuted ? "Unmute voice alerts" : "Mute voice alerts"}
+            onClick={() => {
+              setVoiceMuted(!voiceMuted);
+              if (!voiceMuted && voiceRef.current) {
+                voiceRef.current.pause();
+                setVoicePlaying(false);
+              }
+            }}
+            style={voiceMuted ? undefined : { background: "#1a7465", color: "#fff", borderColor: "#1a7465" }}
+          >
+            {voiceMuted ? <VolumeX size={15} /> : <Volume2 size={15} />}
+          </button>
           {run && (
             <button
               className="fleet-button icon"
@@ -1307,29 +1364,6 @@ export default function FleetDashboard() {
           </button>
         </div>
       )}
-      <div className="fleet-kpis">
-        <Kpi
-          value={String(fleet.attention)}
-          label="Need review"
-          icon={<CircleAlert size={18} />}
-          warning={fleet.attention > 0}
-        />
-        <Kpi
-          value={String(fleet.unseen)}
-          label="Unacknowledged"
-          icon={<MessageSquare size={18} />}
-        />
-        <Kpi
-          value={fleet.started ? `${fleet.reliable} / ${wells.length}` : "—"}
-          label="Reliable feeds"
-          icon={<Radio size={18} />}
-        />
-        <Kpi
-          value={String(fleet.pending)}
-          label="Active checks"
-          icon={<Activity size={18} />}
-        />
-      </div>
       <div className="fleet-layout">
         <div className="fleet-main">
           <FieldMap
@@ -1358,7 +1392,7 @@ export default function FleetDashboard() {
                 <ArrowRight size={13} />
               </button>
             </div>
-            <div className="fleet-charts">
+            <div className={`fleet-charts${chartEntering ? " fleet-entering" : ""}`}>
               <SensorChart
                 frames={well.frames}
                 sensor={pressure}
@@ -1443,7 +1477,7 @@ export default function FleetDashboard() {
           </div>
           <div className="fleet-card">
             <div className="fleet-assessment">
-              <div className="fleet-eyebrow">
+              <div className="fleet-assessment-well">
                 <Sparkles size={12} />
                 {wellName(well)}
               </div>
@@ -1455,6 +1489,11 @@ export default function FleetDashboard() {
                 {well.assessment?.summary ||
                   (investigating ? "Investigating…" : "Waiting for readings")}
               </h3>
+              {voicePlaying && selected === well.id && (
+                <span className="fleet-speaker-icon">
+                  <Volume2 size={13} /> Speaking
+                </span>
+              )}
               {well.assessment?.evidence.length ? (
                 <ul className="fleet-evidence-list">
                   {well.assessment.evidence.slice(0, 2).map((item, index) => (
@@ -1471,7 +1510,6 @@ export default function FleetDashboard() {
                 <IncidentProgress events={well.timeline} />
               )}
               <div className="fleet-next-step">
-                <span>NEXT STEP</span>
                 <p>{well.assessment?.next_step || "None"}</p>
                 {incident && (
                   <div className="fleet-actions" aria-busy={!!savingAction}>
@@ -1543,6 +1581,40 @@ export default function FleetDashboard() {
                       maxLength={500}
                       placeholder="What did you see?"
                     />
+                    <div className="fleet-voice-controls">
+                      <button
+                        className={listening ? "recording" : ""}
+                        title={listening ? "Stop listening" : "Speak to add observation"}
+                        onClick={() => {
+                          if (listening) {
+                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                            (recognitionRef.current as any)?.stop();
+                            setListening(false);
+                            return;
+                          }
+                          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                          const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+                          if (!SR) return;
+                          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                          const recognition: any = new SR();
+                          recognitionRef.current = recognition;
+                          recognition.continuous = false;
+                          recognition.interimResults = false;
+                          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                          recognition.onresult = (event: any) => {
+                            const transcript: string = event.results?.[0]?.[0]?.transcript || "";
+                            setNote((prev) => (prev ? `${prev} ${transcript}` : transcript));
+                          };
+                          recognition.onend = () => setListening(false);
+                          recognition.onerror = () => setListening(false);
+                          recognition.start();
+                          setListening(true);
+                        }}
+                      >
+                        <Mic size={13} />
+                        {listening ? "Listening…" : "Speak"}
+                      </button>
+                    </div>
                     <div className="fleet-actions">
                       <button
                         className="fleet-button primary"
@@ -1954,24 +2026,3 @@ function EvidenceSheet({
   );
 }
 
-function Kpi({
-  value,
-  label,
-  icon,
-  warning = false,
-}: {
-  value: string;
-  label: string;
-  icon: ReactNode;
-  warning?: boolean;
-}) {
-  return (
-    <div className={`fleet-kpi ${warning ? "warn" : ""}`}>
-      <div className="fleet-kpi-icon">{icon}</div>
-      <div>
-        <strong>{value}</strong>
-        <span>{label}</span>
-      </div>
-    </div>
-  );
-}
