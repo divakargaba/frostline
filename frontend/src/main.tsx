@@ -50,12 +50,12 @@ import "./style.css";
 
 type Page = "live" | "legacy" | "monitor" | "experiments" | "real" | "method";
 const nav = [
-  { id: "live", label: "Well map", icon: MapPinned },
-  { id: "legacy", label: "Seed sandbox", icon: Activity },
-  { id: "monitor", label: "Replays", icon: Gauge },
+  { id: "live", label: "Live Demo", icon: MapPinned },
   { id: "experiments", label: "Results", icon: FlaskConical },
-  { id: "real", label: "Real-well pilot", icon: Layers3 },
-  { id: "method", label: "How it works", icon: BookOpen },
+  { id: "method", label: "How It Works", icon: BookOpen },
+  { id: "monitor", label: "Replays", icon: Gauge },
+  { id: "legacy", label: "Seed Sandbox", icon: Activity },
+  { id: "real", label: "Real-Well Pilot", icon: Layers3 },
 ] as const;
 const pct = (x: number | null | undefined) =>
   x == null ? "—" : `${(x * 100).toFixed(1)}%`;
@@ -78,6 +78,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 function App() {
   const [page, setPage] = useState<Page>("live");
+  const [showLanding, setShowLanding] = useState(true);
   const [moreOpen, setMoreOpen] = useState(false);
   const [report, setReport] = useState<Report | null>(null);
   const [scenarios, setScenarios] = useState<Scenario[]>([]);
@@ -202,7 +203,7 @@ function App() {
             <Waves size={19} />
           </span>
           <div>
-            Well operations<small>Case 09</small>
+            Hydrate detection<small>IEEE Hackathon · Case 09</small>
           </div>
         </div>
         <div className="nav-heading">WORKSPACE</div>
@@ -210,7 +211,7 @@ function App() {
           {nav
             .filter(
               (item) =>
-                item.id === "live" || item.id === "experiments" || moreOpen,
+                item.id === "live" || item.id === "experiments" || item.id === "method" || moreOpen,
             )
             .map((item) => (
               <button
@@ -238,8 +239,8 @@ function App() {
         <div className="sidebar-footer">
           <span className="status-dot" />
           <div>
-            Historical demo
-            <small>Operator advice</small>
+            Petrobras 3W data
+            <small>4 wells · real sensors</small>
           </div>
         </div>
       </aside>
@@ -247,7 +248,7 @@ function App() {
       <main>
         <header className="topbar">
           <div>
-            <span className="breadcrumb">Workspace</span>
+            <span className="breadcrumb">Frostline</span>
             <ChevronRight size={13} />
             <strong>{nav.find((n) => n.id === page)?.label}</strong>
           </div>
@@ -255,6 +256,68 @@ function App() {
             <span /> DEMO
           </span>
         </header>
+        {showLanding && (
+          <div className="landing-overlay">
+            <div className="landing-content">
+              <div className="landing-badge">IEEE YP Hackathon 2026 · Case 09</div>
+              <h1 className="landing-title">
+                <Snowflake size={40} className="landing-icon" />
+                frostline
+              </h1>
+              <p className="landing-subtitle">
+                Autonomous hydrate early-warning for offshore wells
+              </p>
+              <div className="landing-problem">
+                <p>
+                  Hydrate blockages cost offshore operators <strong>$1M+ per incident</strong> in
+                  lost production and emergency response. Current monitoring relies on
+                  manual chart-watching across dozens of wells.
+                </p>
+                <p>
+                  Frostline reads pressure, temperature, and flow sensors every minute,
+                  detects hydrate formation using ML + physics, and tells the operator
+                  exactly which well needs attention first — with evidence.
+                </p>
+              </div>
+              <div className="landing-results">
+                <div className="landing-stat">
+                  <span className="landing-stat-value">5 → 10</span>
+                  <span className="landing-stat-label">events caught (of 12)</span>
+                  <span className="landing-stat-detail">After autonomous threshold selection</span>
+                </div>
+                <div className="landing-stat">
+                  <span className="landing-stat-value">0</span>
+                  <span className="landing-stat-label">false alarms added</span>
+                  <span className="landing-stat-detail">Zero additional operator burden</span>
+                </div>
+                <div className="landing-stat">
+                  <span className="landing-stat-value">100%</span>
+                  <span className="landing-stat-label">3W hydrate recall</span>
+                  <span className="landing-stat-detail">9/9 real Petrobras events detected</span>
+                </div>
+              </div>
+              <button
+                className="landing-cta"
+                onClick={() => {
+                  setShowLanding(false);
+                  setPage("live");
+                }}
+              >
+                <Play size={20} />
+                Start Live Demo
+              </button>
+              <div className="landing-nav-hints">
+                <button onClick={() => { setShowLanding(false); setPage("experiments"); }}>
+                  View Results
+                </button>
+                <span>·</span>
+                <button onClick={() => { setShowLanding(false); setPage("method"); }}>
+                  How It Works
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         <div className="content">
           {error && (
             <div className="error" role="alert">
@@ -308,21 +371,21 @@ function App() {
                   <div>
                     <div className="eyebrow">
                       {page === "monitor"
-                        ? "FROM WELL DATA TO A DEFENSIBLE DECISION"
+                        ? "EVIDENCE REPLAY"
                         : page === "experiments"
-                          ? "ONE CHANGE. ONE MEASURED TRADEOFF."
+                          ? "MEASURED IMPROVEMENT"
                           : page === "real"
-                            ? "BEYOND THE SYNTHETIC SEED"
-                            : "THE REASONING BEHIND THE SYSTEM"}
+                            ? "REAL-WORLD VALIDATION"
+                            : "ARCHITECTURE & METHOD"}
                     </div>
                     <h1>
                       {page === "monitor"
-                        ? "See the signal. Understand the call."
+                        ? "Watch the system detect and decide."
                         : page === "experiments"
-                          ? "Make every improvement visible."
+                          ? "From 5 to 10 events caught, zero false alarms added."
                           : page === "real"
-                            ? "Different wells. A harder test."
-                            : "A clear path from evidence to action."}
+                            ? "Validated on real Petrobras 3W well recordings."
+                            : "Sensors → ML + Physics → Agent → Operator brief."}
                     </h1>
                     <p>
                       {page === "monitor"
@@ -1475,11 +1538,12 @@ function Method({ report }: { report: Report }) {
           09<span>CASE</span>
         </div>
         <div>
-          <h2>An autonomous well-event flagging agent.</h2>
+          <h2>Data in, decision out.</h2>
           <p>
-            Frostline turns sensor readings into a traceable investigation, then
-            uses historical outcomes to select a better rule. The operator can
-            inspect every observation, threshold, and follow-up.
+            Frostline reads pressure, temperature, and flow every minute.
+            A trained ML model + physics checks flag anomalies. An LLM agent
+            investigates evidence and writes the operator brief. The system
+            autonomously selects better thresholds from historical outcomes.
           </p>
         </div>
       </div>

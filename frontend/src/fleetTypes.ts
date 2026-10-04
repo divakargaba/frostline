@@ -103,6 +103,7 @@ export type FleetWell = {
     category?: string;
     alternatives?: string[];
     checks?: FleetCheck[];
+    playbook_refs?: string[];
   } | null;
   timeline?: FleetTimelineEvent[];
   followup?: {

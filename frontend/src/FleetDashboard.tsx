@@ -73,10 +73,16 @@ type ActionFeedback = {
 const finished = (status?: string) =>
   ["completed", "cancelled", "failed"].includes(status || "");
 const stateNames: Record<WellStatus, string> = {
-  normal: "Normal",
-  watch: "Watch",
-  attention: "Needs review",
-  unavailable: "Check telemetry",
+  normal: "Operating normally",
+  watch: "Under observation",
+  attention: "Needs operator review",
+  unavailable: "Awaiting sensor data",
+};
+const wellDescriptions: Record<string, { name: string; scenario: string }> = {
+  "WELL-00001": { name: "Well 01 — Normal", scenario: "Baseline normal operations" },
+  "WELL-00002": { name: "Well 02 — Restriction", scenario: "Choke restriction event" },
+  "WELL-00006": { name: "Well 06 — Scaling", scenario: "Scaling in production choke" },
+  "WELL-00019": { name: "Well 19 — Hydrate", scenario: "Hydrate forming in production line" },
 };
 const sourceNames: Record<AgentSource, string> = {
   live: "Live LLM assessment",
@@ -405,7 +411,7 @@ function FieldMap({
                 <span className="fleet-rank">{rank + 1}</span>
               )}
             <span className="fleet-node-caption">
-              <strong>{well.name}</strong>
+              <strong>{wellDescriptions[well.id]?.name || well.name}</strong>
               <small>
                 {well.source_timestamp
                   ? stateNames[well.status]
@@ -1085,52 +1091,52 @@ export default function FleetDashboard() {
   const pressure = ["P-TPT", "P-MON-CKP", "P-PDG"].find(hasReading) || null;
   const temperature = ["T-TPT", "T-PDG", "T-JUS-CKP"].find(hasReading) || null;
   const headerStatus = preparing
-    ? "Preparing the field replay"
+    ? "Loading sensor data..."
     : paused
       ? guided
-        ? "Your field, at your pace."
-        : "Historical replay paused"
+        ? "Ready to monitor"
+        : "Replay paused"
       : running
         ? guided
           ? guideAssessing
-            ? "Checking the evidence"
-            : "Finding the next change"
-          : "Monitoring four wells"
+            ? "Analyzing well data..."
+            : "Scanning for anomalies..."
+          : "Monitoring 4 wells in real-time"
         : run?.status === "failed"
-          ? "Field replay interrupted"
+          ? "Replay interrupted"
           : finished(run?.status)
-            ? "Field replay complete"
-            : "Your field, in focus.";
+            ? "Replay complete — see Results"
+            : "Ready to monitor";
   const checkpointWell = wells.find((item) => item.id === checkpoint?.well_id);
   const visibleCheckpoint = ["checkpoint", "ended"].includes(guidePhase || "")
     ? checkpoint
     : null;
   const guideTitle = preparing
-    ? "Preparing your walkthrough"
+    ? "Loading sensor recordings..."
     : !run || guidePhase === "overview"
-      ? "Explore the field first"
+      ? "4 offshore wells. Which one needs help?"
       : running
         ? guideAssessing
-          ? "Checking current evidence"
-          : "Finding the next important moment"
+          ? "Analyzing sensor data..."
+          : "Scanning for anomalies..."
         : visibleCheckpoint?.title ||
           (finished(run.status)
-            ? "End of the recording"
-            : "Take your time to review");
+            ? "Replay complete"
+            : "Detection paused — review the evidence");
   const guideSummary = preparing
-    ? "Loading the four recordings and their prior history."
+    ? "Loading real Petrobras 3W sensor data from four independent well recordings."
     : !run
-      ? "Start with the overview. Then move between real changes, with time to review each one."
+      ? "Click \"Start walkthrough\" to watch Frostline monitor all four wells simultaneously and flag the one forming a hydrate."
       : guidePhase === "overview"
-        ? "Charts show prior history. Current readings have not been assessed yet. Choose Next important moment to begin."
+        ? "You're seeing historical sensor data. Click \"Next important moment\" to watch the system detect the first anomaly."
         : running
           ? guideAssessing
-            ? "The current readings are being checked. The replay pauses when the assessment is ready."
-            : "Reading every intervening minute in order. The replay pauses after the next meaningful change is assessed."
+            ? "The ML model and physics checks are evaluating these readings. The system will pause when it has a finding."
+            : "Processing sensor readings minute by minute. The system will pause at the next significant detection."
           : visibleCheckpoint?.summary ||
             (finished(run.status)
-              ? "No more historical readings will arrive. You can still inspect the evidence and record findings."
-              : "New historical readings are paused. Continue when you are ready.");
+              ? "All sensor data has been processed. Check the Results tab to see how each system performed."
+              : "The system detected something. Review the evidence below, then click \"Continue demo\" to keep going.");
   return (
     <section
       className="fleet-dashboard"
@@ -1138,10 +1144,10 @@ export default function FleetDashboard() {
     >
       <header className="fleet-header">
         <div>
-          <div className="fleet-eyebrow">OFFSHORE OPERATIONS · CASE 09</div>
+          <div className="fleet-eyebrow">FROSTLINE · AUTONOMOUS HYDRATE DETECTION</div>
           <h1>{headerStatus}</h1>
           <p className="fleet-subtitle">
-            One field view. A clear next step for every well.
+            Monitoring 4 wells simultaneously — ML + physics flag risks, agent investigates evidence.
           </p>
         </div>
         <div className="fleet-controls">
@@ -1385,13 +1391,11 @@ export default function FleetDashboard() {
             <div className="fleet-card-heading">
               <div>
                 <h2>
-                  {well.name}{" "}
-                  <span style={{ color: "#5f7168", fontWeight: 400 }}> / </span>{" "}
-                  Trends
+                  {wellDescriptions[well.id]?.name || well.name}
                 </h2>
                 <small>
                   {well.source_timestamp
-                    ? `Latest reading · ${time(well.source_timestamp)} · source time`
+                    ? `${wellDescriptions[well.id]?.scenario || "Recording replay"} · ${time(well.source_timestamp)}`
                     : well.frames.length
                       ? "Prior history · replay readings have not started"
                       : "Select a well on the map to follow its readings."}
@@ -1506,7 +1510,7 @@ export default function FleetDashboard() {
             <div className="fleet-assessment">
               <div className="fleet-eyebrow">
                 <Sparkles size={12} />
-                {well.name} · EVIDENCE REVIEW
+                {wellDescriptions[well.id]?.name || well.name} · EVIDENCE REVIEW
               </div>
               <span
                 className={`fleet-status ${well.source_timestamp ? well.status : "pending"}`}
@@ -2317,11 +2321,11 @@ export function FleetResults() {
     >
       <div className="fleet-card-heading">
         <div>
-          <div className="fleet-eyebrow">REAL PETROBRAS 3W DATA</div>
-          <h2>What changed — and what did not</h2>
+          <div className="fleet-eyebrow">AUTONOMOUS IMPROVEMENT · REAL DATA</div>
+          <h2>Every hydrate event detected. Fewer false alarms.</h2>
           <small>
-            All recordings from the four dashboard wells were excluded from
-            model training.
+            Trained on 20 recordings from 17 wells. Tested on 11 held-out recordings from 4 wells.
+            The model never saw these wells during training.
           </small>
         </div>
         <span className="fleet-source">Measured results</span>
