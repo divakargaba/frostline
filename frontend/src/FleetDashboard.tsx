@@ -55,6 +55,18 @@ import "./fleet.css";
 const SESSION_KEY = "frostline.fleet.session.v2";
 const SELECTED_WELL_KEY = "frostline.fleet.selectedWell.v2.";
 const DEFAULT_WELL = "WELL-00001";
+// NORA, the voice assistant: severity first, then the well, then the
+// recommended operator action. Advisory only; she never orders an intervention
+// and says nothing the dashboard has not established.
+// [one well, several wells] wording for each announced state.
+const ALERT_PHRASES: Record<WellStatus, [string, string]> = {
+  attention: ["requires attention", "require attention"],
+  unavailable: ["has lost sensor data", "have lost sensor data"],
+  watch: ["is under observation", "are under observation"],
+  normal: ["is operating normally", "are operating normally"],
+};
+const NORA_OPENING =
+  "Offshore operations assistant online. Monitoring four wells.";
 type OperatorAction =
   "acknowledge" | "observation" | "complete" | "check" | "recheck";
 type CheckSubmission = {
@@ -833,7 +845,44 @@ export default function FleetDashboard() {
   const [voicePlaying, setVoicePlaying] = useState(false);
   const [listening, setListening] = useState(false);
   const voiceRef = useRef<HTMLAudioElement | null>(null);
-  const spokenIncidents = useRef<Set<string>>(new Set());
+  // Each well's last seen state, so only a change is announced. `null` means
+  // the first snapshot has not been seen yet.
+  const lastStatus = useRef<{
+    run: string;
+    wells: Map<string, string>;
+    announced: Set<string>;
+  } | null>(null);
+  const voiceRequest = useRef(0);
+  // Play a short line through the backend TTS route; the newest line wins. If
+  // the route is unavailable, the browser's own voice keeps the alert audible.
+  const playVoice = (text: string) => {
+    const id = ++voiceRequest.current;
+    voiceRef.current?.pause();
+    window.speechSynthesis?.cancel();
+    fetch("/api/fleet/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: text.slice(0, 500) }),
+    })
+      .then((r) => (r.ok ? r.blob() : null))
+      .then((blob) => {
+        if (id !== voiceRequest.current) return;
+        if (!blob) {
+          window.speechSynthesis?.speak(new SpeechSynthesisUtterance(text));
+          return;
+        }
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        voiceRef.current = audio;
+        setVoicePlaying(true);
+        audio.onended = () => {
+          setVoicePlaying(false);
+          URL.revokeObjectURL(url);
+        };
+        audio.play().catch(() => setVoicePlaying(false));
+      })
+      .catch(() => {});
+  };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
   const lastEvent = useRef(-1);
@@ -887,36 +936,54 @@ export default function FleetDashboard() {
     const timer = setTimeout(() => setChartEntering(false), 400);
     return () => clearTimeout(timer);
   }, [selected]);
-  // Voice alert: auto-play TTS when a well transitions to attention
+  // Voice alerts: announce a well only when it moves into a warning, problem
+  // or lost-telemetry state, in one short line.
+  const statusKey = (run?.wells || [])
+    .map((w) => `${w.id}=${w.source_timestamp ? w.status : "pending"}`)
+    .join("|");
   useEffect(() => {
-    if (voiceMuted || !run) return;
-    for (const w of run.wells) {
-      if (w.status === "attention" && w.incident && w.assessment?.summary && !spokenIncidents.current.has(w.incident.id)) {
-        spokenIncidents.current.add(w.incident.id);
-        const text = `Alert on ${w.name}. ${w.assessment.summary}`;
-        fetch("/api/fleet/tts", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: text.slice(0, 500) }),
-        })
-          .then((r) => (r.ok ? r.blob() : null))
-          .then((blob) => {
-            if (!blob) return;
-            const url = URL.createObjectURL(blob);
-            const audio = new Audio(url);
-            voiceRef.current = audio;
-            setVoicePlaying(true);
-            audio.onended = () => {
-              setVoicePlaying(false);
-              URL.revokeObjectURL(url);
-            };
-            audio.play().catch(() => setVoicePlaying(false));
-          })
-          .catch(() => {});
-        break;
-      }
+    if (!run) {
+      lastStatus.current = null;
+      return;
     }
-  }, [run?.wells, voiceMuted]);
+    const first = lastStatus.current === null || lastStatus.current.run !== run.id;
+    const before = first ? new Map<string, string>() : lastStatus.current!.wells;
+    // A well that flickers in and out of a state is announced for that state
+    // once per run, so the voice stays an alert and not a running commentary.
+    const announced = first ? new Set<string>() : lastStatus.current!.announced;
+    const entered = run.wells.filter(
+      (w) =>
+        w.source_timestamp &&
+        w.status !== "normal" &&
+        before.get(w.id) !== w.status,
+    );
+    const changed = entered.filter((w) => !announced.has(`${w.id}:${w.status}`));
+    entered.forEach((w) => announced.add(`${w.id}:${w.status}`));
+    lastStatus.current = {
+      run: run.id,
+      wells: new Map(
+        run.wells.map((w) => [w.id, w.source_timestamp ? w.status : "pending"]),
+      ),
+      announced,
+    };
+    // States already on screen when the page loads are not announced again.
+    if ((first && run.index > 0) || !changed.length || voiceMuted) return;
+    const parts = (["attention", "unavailable", "watch"] as WellStatus[])
+      .map((status) => {
+        const names = changed.filter((w) => w.status === status).map((w) => w.name);
+        if (!names.length) return "";
+        return names.length === 1
+          ? `${names[0]} ${ALERT_PHRASES[status][0]}.`
+          : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]} ${ALERT_PHRASES[status][1]}.`;
+      })
+      .filter(Boolean);
+    const critical = changed.some((w) => w.status === "attention");
+    playVoice(
+      critical
+        ? `Critical alert. ${parts.join(" ")} Immediate operator review recommended.`
+        : `Warning. ${parts.join(" ")} Operator review recommended.`,
+    );
+  }, [run?.id, statusKey]);
   useEffect(() => {
     if (!sessionId) return;
     let disposed = false;
@@ -1048,6 +1115,7 @@ export default function FleetDashboard() {
       setSessionId(next.id);
       localStorage.setItem(SESSION_KEY, next.id);
       setNotice("");
+      if (!voiceMuted) playVoice(NORA_OPENING);
     } catch (e) {
       setError((e as Error).message);
     } finally {
@@ -1314,8 +1382,10 @@ export default function FleetDashboard() {
             title={voiceMuted ? "Unmute voice alerts" : "Mute voice alerts"}
             onClick={() => {
               setVoiceMuted(!voiceMuted);
-              if (!voiceMuted && voiceRef.current) {
-                voiceRef.current.pause();
+              if (!voiceMuted) {
+                voiceRequest.current++;
+                voiceRef.current?.pause();
+                window.speechSynthesis?.cancel();
                 setVoicePlaying(false);
               }
             }}
