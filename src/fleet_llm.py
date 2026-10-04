@@ -184,6 +184,14 @@ def _tool(snap, name, args):
         return {"available": bool(differences), "source": "observed_pressure_comparison", "differentials_bar": differences,
                 "locations": {"P-PDG": "Permanent downhole gauge", "P-TPT": "Subsea tree pressure transducer", "P-MON-CKP": "Upstream production choke", "P-JUS-CKP": "Downstream production choke"},
                 "sources": [SENSOR_REFERENCE, DATA_PAPER], "note": "These are measured pressure differences, not thermodynamic predictions. A pressure difference alone cannot establish the cause."}
+    if name == "sensor_changes":
+        import pandas as pd
+        from src.sensor_insights import sensor_insights
+        rows = snap.get("readings", [])
+        if not rows:
+            return {"available": False, "reason": "No observed readings"}
+        frame = pd.DataFrame([r["sensors"] for r in rows], index=pd.to_datetime([r["t"] for r in rows]))
+        return {"available": True, "source": "observed_sensor_changes", **sensor_insights(frame)}
     if name == "prior_history":
         return {"available": True, "source": "session_history", "decisions": snap.get("history", [])[-5:],
                 "operator_report": {"text": snap.get("operator_observation", ""), "source": "human_report", "verified": False,
@@ -216,6 +224,7 @@ TOOL_SCHEMAS = [
     _schema("recent_window", "Review actual past sensor values and changes. Pressure bar; temperature C.", {"minutes": {"type": "integer", "enum": [10, 30, 60]}}),
     _schema("sensor_quality", "Check available pressure sensors and reported missing/frozen/stale conditions."),
     _schema("pressure_comparison", "Compare independent upstream and downstream pressure measurements."),
+    _schema("sensor_changes", "Per-sensor 10-minute changes and combined pressure/temperature inferences explaining why each change matters."),
     _schema("model_evidence", "Get trained model scores, version and limitations; no guessed probabilities."),
     _schema("prior_history", "Review earlier assessments and operator observations for this well."),
     _schema("search_playbook", "Retrieve concise project review guidance. This is not an approved site procedure.", {"query": {"type": "string", "minLength": 1, "maxLength": 200}}),
@@ -340,6 +349,7 @@ def _summary(tool, result):
             "recent_window": f"Inspected {result.get('minutes')} minutes of observed readings.",
             "model_evidence": "Reviewed trained model scores and limitations.",
             "pressure_comparison": "Compared available upstream and downstream pressures.",
+            "sensor_changes": "Reviewed per-sensor changes and pressure/temperature inferences.",
             "search_playbook": "Retrieved project review guidance; site procedure still required.",
             "prior_history": "Reviewed recent assessments and operator observations.",
             "fleet_summary": "Reviewed other wells' current conditions."}.get(tool, "Reviewed tool result.")

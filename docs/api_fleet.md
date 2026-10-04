@@ -86,8 +86,11 @@ Returned by every session endpoint and carried as the SSE `payload`.
   "source_file": "WELL-00019_20120601165020.parquet", "source_timestamp": "2012-06-02T22:34:00",
   "quality": {"status": "good|degraded|unavailable", "summary": "…", "missing": [], "invalid": [], "unchanged": []},
   "prediction": {"scores": {"normal": 0.1, "hydrate": 0.85, "lookalike": 0.05}, "model_id": "fleet-…",
-                 "threshold": 0.7, "persistence_minutes": 10, "alarm_streak": 4, "alarm_active": false},
-  "frames": [{"t": "…", "elapsed_seconds": 2340, "sensors": {"P-PDG": 251.2, "…": null}, "risk_score": 0.85}],
+                 "threshold": 0.7, "recovery_threshold": 0.6, "persistence_minutes": 10, "recovery_minutes": 5,
+                 "alarm_streak": 4, "alarm_active": false},
+  "frames": [{"t": "…", "elapsed_seconds": 2340, "sensors": {"P-PDG": 251.2, "…": null}, "risk_score": 0.85,
+              "limits": {"hydrate_threshold": 0.7, "alarm_active": false, "activation_streak": 4, "recovery_streak": 0,
+                         "pressure_trigger_bar": 2.0, "pressure_change_bar": -0.4, "divergence_change_bar": 0.1}}],
   "incident": {"id": "…", "acknowledged": false, "completed": false, "opened_at": "…", "note": "",
                "checks": {}, "condition_cleared": false} ,
   "assessment": {"summary": "…", "evidence": ["…"], "next_step": "…", "source": "rules|live", "uncertainty": "…",
@@ -102,6 +105,20 @@ Returned by every session endpoint and carried as the SSE `payload`.
 
 - `frames`: the last 240 observed minutes (30 warm-up minutes precede `elapsed_seconds` 0).
 - `prediction` is `null` until the first scored minute. Scores are uncalibrated model outputs.
+- `insights` (per well, refreshed every minute; `null` before the first) comes from
+  `src/sensor_insights.py`: `channels[]` gives each sensor's value, 10-minute change and trend
+  (`rising | falling | steady | unavailable | inactive`), and `inferences[]` gives combined
+  pressure/temperature observations (`{id, level: watch|info, sensors, text, why}`), e.g. a growing
+  tubing or line pressure difference, cooling at rising pressure (toward hydrate-forming
+  conditions), pressure and temperature falling together (flow loss), or pressure moving with a
+  fixed choke. They are observations, not diagnoses, and do not change scores or the alarm policy.
+  The catalog's `sensors[]` lists `{code, name, location, unit, why}` for all ten channels. The
+  LLM investigator gets the same inferences through its `sensor_changes` tool.
+- `frames[].limits` records the limits applied at that minute (`null` for warm-up frames):
+  `hydrate_threshold` is the activation threshold while no alarm is active and the recovery
+  threshold while one is (hysteresis); `pressure_trigger_bar` is `max(2 bar, 2% of P-TPT at the
+  start of the 10-minute window)`, compared against `|pressure_change_bar|` and
+  `|divergence_change_bar|`.
 - Live LLM assessments add `playbook_refs` (BM25 playbook document ids).
 
 ### `POST /api/fleet/sessions/{id}/control`

@@ -34,6 +34,8 @@ import {
   YAxis,
 } from "recharts";
 import { ApiError, api, number } from "./api";
+import { PressureTemperatureChart, ThresholdTracker } from "./WellCharts";
+import { SensorGuide } from "./SensorGuide";
 import type {
   AgentSource,
   FleetCatalog,
@@ -1383,6 +1385,9 @@ export default function FleetDashboard() {
               />
             </div>
           </div>
+          <PressureTemperatureChart frames={well.frames} />
+          <SensorGuide sensors={catalog?.sensors ?? []} insights={well.insights} />
+          <ThresholdTracker frames={well.frames} prediction={well.prediction} />
           <ModelPredictions
             wells={wells}
             selected={well.id}

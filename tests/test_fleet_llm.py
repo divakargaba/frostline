@@ -424,3 +424,9 @@ def test_missing_sensor_alone_cannot_be_labeled_a_process_alarm():
     output, _, _ = attempt_attention(snap)
     assert output["source"] == "model_fallback"
     assert output["status"] != "attention"
+
+
+def test_sensor_changes_tool_returns_observed_inferences():
+    result = agent._tool(snapshot(), "sensor_changes", {})
+    assert result["available"] and result["source"] == "observed_sensor_changes"
+    assert result["window_minutes"] == 10 and result["channels"]

@@ -15,6 +15,8 @@ from typing import Literal
 import uuid
 
 import pandas as pd
+
+from src.sensor_insights import SENSOR_INFO, sensor_insights
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
@@ -114,12 +116,22 @@ def empty_well(well):
     return {"id": well, "name": f"Well {well.removeprefix('WELL-').lstrip('0') or '0'}", "status": "unavailable", "source_file": "", "source_timestamp": None,
             "quality": {"status": "unavailable", "summary": "Loading historical measurements", "missing": [], "invalid": [], "unchanged": []},
             "last_assessed": None, "next_check": None, "incident": None, "assessment": None, "frames": [], "investigation": "idle", "activity": "Preparing recording",
-            "prediction": None, "timeline": [], "followup": {"last_checked_at": None, "next_check_at": None, "trigger": "", "change_summary": "Awaiting the first assessment."}}
+            "prediction": None, "insights": None, "timeline": [], "followup": {"last_checked_at": None, "next_check_at": None, "trigger": "", "change_summary": "Awaiting the first assessment."}}
 
 
-def frame(t, elapsed, sensors, risk):
+def frame(t, elapsed, sensors, risk, limits=None):
     # Frames are JSON-safe and never mutated after creation, so snapshots share them by reference.
-    return {"t": t.isoformat(), "elapsed_seconds": int(elapsed), "sensors": safe(sensors.reindex(SENSORS).to_dict()), "risk_score": safe(risk)}
+    return {"t": t.isoformat(), "elapsed_seconds": int(elapsed), "sensors": safe(sensors.reindex(SENSORS).to_dict()), "risk_score": safe(risk), "limits": safe(limits)}
+
+
+def limits(alarm, policy, signals):
+    """The decision limits applied at this minute: hydrate hysteresis and the window-relative pressure trigger."""
+    active = bool(alarm.get("active"))
+    return {"hydrate_threshold": policy["recovery_threshold"] if active else policy["activation_threshold"],
+            "alarm_active": active, "activation_streak": int(alarm.get("activation_streak", 0) or 0),
+            "recovery_streak": int(alarm.get("recovery_streak", 0) or 0),
+            "pressure_trigger_bar": signals.get("pressure_trigger_bar"), "pressure_change_bar": signals.get("pressure_change_bar"),
+            "divergence_change_bar": signals.get("line_difference_change_bar")}
 
 
 class FleetSession:
@@ -287,11 +299,13 @@ class FleetSession:
             state.update(monitored["state"])
             status, material = monitored["status"], monitored["material"]
             item.update(status=status, quality={"status": "unavailable" if blocked else quality.get("status", "good"), "summary": quality.get("summary", ""), "missing": quality.get("missing", []), "invalid": quality.get("invalid", []), "unchanged": quality.get("unchanged", [])}, source_timestamp=t.isoformat())
-            item["frames"] = item["frames"][-239:] + [frame(t, self.index * 60, row.iloc[-1], scores.get("hydrate"))]
             alarm = state.get("alarm", {})
+            item["frames"] = item["frames"][-239:] + [frame(t, self.index * 60, row.iloc[-1], scores.get("hydrate"), limits(alarm, policy, monitored["signals"]))]
             item["prediction"] = {"scores": safe(scores), "model_id": self.bundle.get("model_id", "fleet-v1"),
-                                  "threshold": policy.get("activation_threshold"), "persistence_minutes": policy.get("persistence_minutes"),
+                                  "threshold": policy.get("activation_threshold"), "recovery_threshold": policy.get("recovery_threshold"),
+                                  "persistence_minutes": policy.get("persistence_minutes"), "recovery_minutes": policy.get("recovery_minutes"),
                                   "alarm_streak": int(alarm.get("activation_streak", 0) or 0), "alarm_active": bool(alarm.get("active"))}
+            item["insights"] = sensor_insights(self.history[well])
             if material or item["assessment"] is None:
                 item["assessment"] = self.default_assessment(well, result, status)
             if status != "normal":
@@ -653,7 +667,7 @@ def read_report(name):
 @router.get("/catalog")
 def catalog():
     return {"wells": [{"id": w, "name": empty_well(w)["name"], "source_file": ""} for w in WELLS],
-            "default_speed": 12, "speeds": SPEEDS, **capabilities()}
+            "default_speed": 12, "speeds": SPEEDS, "sensors": SENSOR_INFO, **capabilities()}
 
 
 @router.get("/results")

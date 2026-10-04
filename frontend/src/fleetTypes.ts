@@ -13,6 +13,16 @@ export type FleetFrame = {
   elapsed_seconds: number;
   sensors: Record<string, number | null>;
   risk_score: number | null;
+  limits?: FleetLimits | null;
+};
+export type FleetLimits = {
+  hydrate_threshold: number;
+  alarm_active: boolean;
+  activation_streak: number;
+  recovery_streak: number;
+  pressure_trigger_bar: number | null;
+  pressure_change_bar: number | null;
+  divergence_change_bar: number | null;
 };
 export type FleetCheckResult = "confirmed" | "not_confirmed" | "unavailable";
 export type FleetCheck = {
@@ -48,7 +58,9 @@ export type FleetPrediction = {
   scores: { normal: number | null; hydrate: number | null; lookalike: number | null };
   model_id: string;
   threshold: number | null;
+  recovery_threshold?: number | null;
   persistence_minutes: number | null;
+  recovery_minutes?: number | null;
   alarm_streak: number;
   alarm_active: boolean;
 };
@@ -97,6 +109,7 @@ export type FleetWell = {
   };
   frames: FleetFrame[];
   prediction?: FleetPrediction | null;
+  insights?: FleetInsights | null;
   investigation: "idle" | "queued" | "running" | "complete" | "unavailable";
   activity: string;
 };
@@ -124,10 +137,42 @@ export type FleetCatalog = {
   wells: { id: string; name: string; source_file: string }[];
   default_speed: number;
   speeds: number[];
+  sensors?: SensorInfo[];
   model_ready: boolean;
   llm_configured: boolean;
   llm_providers: string[];
   readiness_message: string;
+};
+export type SensorInfo = {
+  code: string;
+  name: string;
+  location: string;
+  unit: string;
+  why: string;
+};
+export type SensorChannel = {
+  code: string;
+  name: string;
+  unit: string;
+  value: number | null;
+  change: number | null;
+  trend: "rising" | "falling" | "steady" | "unavailable" | "inactive";
+  notable: boolean;
+  note: string;
+};
+export type SensorInference = {
+  id: string;
+  level: "watch" | "info";
+  sensors: string[];
+  text: string;
+  why: string;
+};
+export type FleetInsights = {
+  as_of: string | null;
+  window_minutes: number;
+  channels: SensorChannel[];
+  inferences: SensorInference[];
+  note?: string;
 };
 export type FleetEvent = { id: number; type: string; payload: FleetRun };
 export type FleetWorkflowReport = {

@@ -467,7 +467,7 @@ def test_snapshot_contract_has_no_guided_or_fault_fields():
     assert set(snap) == SNAPSHOT_KEYS
     assert snap["status"] == "running" and snap["use_llm"] is False and snap["agent_mode"] == "rules"
     prediction = snap["wells"][0]["prediction"]
-    assert set(prediction) == {"scores", "model_id", "threshold", "persistence_minutes", "alarm_streak", "alarm_active"}
+    assert set(prediction) == {"scores", "model_id", "threshold", "recovery_threshold", "persistence_minutes", "recovery_minutes", "alarm_streak", "alarm_active"}
     assert set(prediction["scores"]) == {"normal", "hydrate", "lookalike"}
     assert not hasattr(session, "guide") and not hasattr(session, "fault") and not hasattr(session, "mode")
     # Published snapshots share immutable frames but never the mutable well state.
@@ -481,7 +481,8 @@ def test_snapshot_contract_has_no_guided_or_fault_fields():
 def test_catalog_reports_configured_providers_by_name_only(monkeypatch):
     with TestClient(app) as client:
         catalog = client.get("/api/fleet/catalog").json()
-        assert set(catalog) == {"wells", "default_speed", "speeds", "model_ready", "llm_configured", "llm_providers", "readiness_message"}
+        assert set(catalog) == {"wells", "default_speed", "speeds", "sensors", "model_ready", "llm_configured", "llm_providers", "readiness_message"}
+        assert [item["code"] for item in catalog["sensors"]][:4] == ["P-PDG", "T-PDG", "P-TPT", "T-TPT"]
         assert catalog["llm_configured"] is False and catalog["llm_providers"] == []
         assert catalog["speeds"] == [12, 30, 60, 120] and catalog["default_speed"] == 12
         monkeypatch.setenv("GROQ_API_KEY", "secret-groq-value")
@@ -568,3 +569,29 @@ def test_removed_routes_are_gone():
             assert client.get(path).status_code == 404
         assert client.post("/tts").status_code in {404, 405}
         assert client.get("/api/health").json()["status"] == "ok"
+
+
+def test_frames_record_the_limits_applied_each_minute():
+    session = ready()
+    policy = session.bundle["policy"]
+    assert all(f["limits"] is None for f in session.wells[WELLS[0]]["frames"])
+    for _ in range(60):
+        session.advance()
+    for well in WELLS:
+        for f in session.wells[well]["frames"][-60:]:
+            lim = f["limits"]
+            expected = policy["recovery_threshold"] if lim["alarm_active"] else policy["activation_threshold"]
+            assert lim["hydrate_threshold"] == expected
+            assert lim["pressure_trigger_bar"] >= 2.0
+    hydrate = session.wells["WELL-00019"]
+    assert any(f["limits"]["alarm_active"] for f in hydrate["frames"][-60:])
+    assert hydrate["prediction"]["recovery_threshold"] == policy["recovery_threshold"]
+
+
+def test_wells_carry_sensor_insights_each_minute():
+    session = ready()
+    session.advance()
+    insights = session.wells["WELL-00019"]["insights"]
+    assert insights["window_minutes"] == 10 and len(insights["channels"]) == 10
+    assert insights["as_of"] == session.wells["WELL-00019"]["source_timestamp"]
+    assert any(ch["trend"] == "inactive" for ch in session.wells["WELL-00001"]["insights"]["channels"])
