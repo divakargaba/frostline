@@ -1,62 +1,48 @@
 #!/usr/bin/env python3
-"""Smoke test: one real OpenRouter call with a tool, verify round-trip.
+"""Smoke test: one real fleet LLM investigation through the provider pool (Gemini -> Groq -> OpenRouter).
 
-Usage: python scripts/llm_smoke_test.py
+Replays 40 source minutes of the four demo wells, then asks the LLM investigator to review
+WELL-00019 exactly as a `use_llm: true` run would. Uses at most 3 provider requests.
+
+Usage: python scripts/llm_smoke_test.py   (needs a provider key in .env and the trained fleet model)
 """
-import json
-import sys
+import asyncio
 import os
+import sys
 
-# Ensure project root is on path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.llm import OpenRouterClient, get_llm_client, MockLLMClient
+
+async def run(well="WELL-00019"):
+    from backend.fleet import SESSIONS, FleetSession
+    session = FleetSession(use_llm=True)
+    SESSIONS[session.id] = session
+    print("Providers:", ", ".join(session.caps["llm_providers"]))
+    await session.prepare()
+    for _ in range(40):
+        session.advance()
+    await session.investigate_well(well)
+    result = next(e["result"] for e in reversed(session.audit) if e["kind"] == "assessment" and "result" in e)
+    meta = result.get("metadata", {})
+    item = session.wells[well]
+    print(f"Source: {result.get('source')}  provider: {meta.get('provider')}  model: {meta.get('model')}  attempts: {meta.get('attempts')}  tools: {meta.get('tool_calls')}  latency: {meta.get('latency_ms')} ms")
+    print(f"Status: {item['status']}  investigation: {item['investigation']}")
+    print(f"Brief: {item['assessment']['summary']}")
+    if meta.get("failure_reason"):
+        print(f"Fallback reason: {meta['failure_reason']}")
+    return result.get("source") == "live_llm"
 
 
 def main():
-    client = get_llm_client()
-    if isinstance(client, MockLLMClient):
-        print("SKIP — no OpenRouter key/model set. Using mock client.")
-        print("Set OPENROUTER_API_KEY and OPENROUTER_MODEL in .env to test.")
-        return
-
-    assert isinstance(client, OpenRouterClient)
-    print(f"Model: {client.model}")
-
-    tools = [{
-        "type": "function",
-        "function": {
-            "name": "get_time",
-            "description": "Returns the current UTC time.",
-            "parameters": {"type": "object", "properties": {}, "required": []},
-        },
-    }]
-
-    # Step 1: ask the model to call the tool
-    messages = [{"role": "user", "content": "What time is it right now? Use the get_time tool."}]
-    resp = client.chat(messages, tools=tools)
-    print(f"Step 1 — tokens: {resp.usage['total_tokens']}, cost: ~${resp.cost_estimate:.6f}")
-
-    if resp.tool_calls:
-        tc = resp.tool_calls[0]
-        print(f"  Tool call: {tc.name}({tc.arguments})")
-
-        # Step 2: send tool result, get final answer
-        from datetime import datetime, timezone
-        now = datetime.now(timezone.utc).isoformat()
-        messages.append({"role": "assistant", "content": resp.content, "tool_calls": [
-            {"id": tc.id, "type": "function", "function": {"name": tc.name, "arguments": json.dumps(tc.arguments)}}
-        ]})
-        messages.append({"role": "tool", "tool_call_id": tc.id, "content": json.dumps({"utc": now})})
-        resp2 = client.chat(messages, tools=tools)
-        print(f"Step 2 — tokens: {resp2.usage['total_tokens']}, cost: ~${resp2.cost_estimate:.6f}")
-        print(f"  Answer: {resp2.content[:200] if resp2.content else '(no content)'}")
-        print("OK")
-    else:
-        print(f"  No tool call returned. Content: {resp.content[:200] if resp.content else '(none)'}")
-        # Some free models don't support tools well — still counts as a valid smoke test
-        print("OK (no tool call — model may not support tools)")
+    import backend.config  # noqa: F401  (loads .env)
+    from src.llm import configured_providers
+    if not configured_providers():
+        print("SKIP - no provider configured. Set GEMINI_API_KEY, GROQ_API_KEY or OPENROUTER_API_KEY in .env (and unset LLM_MODE=mock).")
+        return 0
+    ok = asyncio.run(run())
+    print("OK" if ok else "DEGRADED - the investigation fell back to rules")
+    return 0 if ok else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

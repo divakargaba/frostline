@@ -7,15 +7,15 @@ existing 31-recording / 21-well 3W subset with causal one-minute processing and
 four fixed demo wells: WELL-00001, 00002, 00006 and 00019. Keep the subset and
 original files; do not expand to configurable fleets or the full dataset.
 
-The default map uses `frontend/src/FleetDashboard.tsx` and `backend/fleet.py`:
-four independent feeds, map above graphs, priority/assessment rail, acknowledgment,
-operator observations, targeted telemetry faults, scheduled follow-ups and SSE.
-Public runs default to Guided demo: a paused overview, causal scanning to the next
-meaningful change, then a pause after evidence checks settle. Reading, acknowledgment
-and saved findings never resume the clock. Continuous mode defaults to 12x (one
-source minute per five seconds). Guide checkpoints and selected-well navigation are
-presentation controls, not event labels or changes to model scoring. Preserve
-minute-by-minute parity between guided and continuous replay.
+There is ONE runtime pipeline: `backend/fleet.py` + `src/fleet_model.py` +
+`src/fleet_policy.py` + `src/fleet_llm.py`. The frontend has two views: Monitor
+(`frontend/src/FleetDashboard.tsx`: map, trends, per-well model predictions,
+priority/assessment rail, acknowledgment, observations, checks, scheduled
+follow-ups, SSE) and Scores (`frontend/src/Scores.tsx`: `GET /api/scores` ladder
+B0 → B1 → B1-revised → M1 → M3 plus the fleet holdout and workflow reports).
+Runs are continuous (12x default; pause / resume / +1 min step). Guided demo,
+fault injection, the old `/stream` agent replay and the seed sandbox were removed;
+do not reintroduce them. Keep the UI text minimal.
 
 Source timestamps are naive; label them source time, not verified UTC. Map
 positions and alignment across separate recordings are illustrative.
@@ -24,7 +24,7 @@ positions and alignment across separate recordings are illustrative.
 recording of the four demo wells excluded. Three grouped validation folds compare four fixed feature/weighting families and
 15 policies each before the 11-recording holdout is scored. All three challengers
 failed predeclared non-regression gates; the incumbent predictor is retained. Run
-`python scripts/train_fleet_model.py`; Results reads the resulting measured report.
+`python scripts/train_fleet_model.py`; Scores reads the resulting measured report.
 The selected policy reduces false alarms but delays detection. All four held-out
 hydrate recordings are from one well; do not imply four independent hydrate wells.
 Labels never enter runtime model/LLM snapshots. Missing or invalid data remains
@@ -36,16 +36,18 @@ operator checks, alternatives and scheduled rechecks. Runtime retains check resu
 source-time incident history and before/after evidence. Acknowledgment, completed
 reviews and operator notes never clear sensor concerns or become training labels.
 
-**LLM work is deferred by user choice.** Public FleetSession runs use_llm=False,
-even if a key is present. The existing `src/fleet_llm.py` adapter remains for future
-opt-in work; its integration tests explicitly enable mocked provider mode. Do not
-request a key or claim live verification. Never commit `.env` credentials.
+**The LLM is an optional per-run toggle (Rules | LLM), rules by default.** With
+`use_llm`, reviews go through `src/fleet_llm.investigate` over the provider pool in
+`src/llm.py` (Gemini → Groq → OpenRouter) with BM25 playbook search (`src/rag.py`),
+validation and rule fallback; it can only escalate the numerical status. Without a
+provider key the run stays on rules. Live-provider behaviour is verified only via
+`scripts/llm_smoke_test.py`; tests use mocked transports. Never commit `.env`
+credentials.
 
-The separate synthetic seed workflow remains under More → Seed sandbox, using
-`src/research.py`, `src/live_agent.py` and `backend/live.py`. Its first 10 days
-calibrate, next 10 select, and last 10 score; final thresholds refit on days 1–20.
-This is separate from the grouped 3W training protocol. The older out-of-fold pilot
-also remains available and is not the new model's holdout score.
+Offline scoring only (not served at runtime): `eval.py` + `src/research.py` (seed
+baselines; days 1–10 calibrate, 11–20 select, 21–30 score), `scripts/train_model.py`
++ `src/model.py` (5-class M1 `lgbm_hydrate.pkl`), and `python -m src.real_pilot`
+(older out-of-fold pilot, not the fleet holdout score).
 
 The broader architecture below is future context. Physics, dosing, forecasting,
 vector retrieval, voice and equipment actuation are unimplemented. Keep the

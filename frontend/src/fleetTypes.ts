@@ -2,33 +2,6 @@ export type FleetStatus =
   "preparing" | "running" | "paused" | "completed" | "cancelled" | "failed";
 export type WellStatus = "normal" | "watch" | "attention" | "unavailable";
 export type AgentSource = "live" | "rules" | "recorded";
-export type FleetMode = "guided" | "continuous";
-export type FleetGuide = {
-  phase:
-    | "overview"
-    | "seeking"
-    | "assessing"
-    | "checkpoint"
-    | "manual_pause"
-    | "ended";
-  checkpoint: {
-    id: string;
-    kind:
-      | "concern"
-      | "escalation"
-      | "recovery"
-      | "telemetry_loss"
-      | "telemetry_recovery"
-      | "operator_followup"
-      | "step"
-      | "ended";
-    title: string;
-    summary: string;
-    well_id: string | null;
-    source_timestamp: string | null;
-    index: number;
-  } | null;
-};
 export type ToolTrace = {
   name: string;
   status: "running" | "done" | "failed";
@@ -70,6 +43,14 @@ export type FleetEvidenceSnapshot = {
   status: WellStatus;
   summary: string;
   evidence: string[];
+};
+export type FleetPrediction = {
+  scores: { normal: number | null; hydrate: number | null; lookalike: number | null };
+  model_id: string;
+  threshold: number | null;
+  persistence_minutes: number | null;
+  alarm_streak: number;
+  alarm_active: boolean;
 };
 export type FleetWell = {
   id: string;
@@ -115,21 +96,21 @@ export type FleetWell = {
     after?: FleetEvidenceSnapshot | null;
   };
   frames: FleetFrame[];
+  prediction?: FleetPrediction | null;
   investigation: "idle" | "queued" | "running" | "complete" | "unavailable";
   activity: string;
 };
 export type FleetRun = {
   id: string;
   status: FleetStatus;
-  mode: FleetMode;
-  guide: FleetGuide;
   speed: number;
   elapsed_seconds: number;
   index: number;
   total: number;
-  agent_mode: AgentSource;
+  agent_mode: "live" | "rules";
+  use_llm: boolean;
   llm_configured: boolean;
-  llm_deferred?: boolean;
+  llm_providers: string[];
   model_ready: boolean;
   readiness_message: string;
   wells: FleetWell[];
@@ -138,16 +119,14 @@ export type FleetRun = {
   requests_used: number;
   request_budget: number;
   error?: string;
-  fault: { well_id: string; remaining: number; kind: string } | null;
 };
 export type FleetCatalog = {
   wells: { id: string; name: string; source_file: string }[];
   default_speed: number;
-  default_mode: FleetMode;
   speeds: number[];
   model_ready: boolean;
   llm_configured: boolean;
-  llm_deferred?: boolean;
+  llm_providers: string[];
   readiness_message: string;
 };
 export type FleetEvent = { id: number; type: string; payload: FleetRun };
@@ -184,4 +163,15 @@ export type FleetWorkflowReport = {
     metrics?: Record<string, number>;
   }[];
   limits?: string[];
+};
+export type ScoreRow = {
+  name: string;
+  description: string;
+  caught: number;
+  total_events: number;
+  missed: number;
+  false_alarms_per_day: number | null;
+  mean_lead_time_min: number | null;
+  misdiagnosis_rate: number | null;
+  notes: string;
 };

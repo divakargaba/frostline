@@ -395,12 +395,16 @@ async def _request(payload, timeout):
         return response.json()
 
 
-async def investigate(snapshot: dict, emit, *, transport=None, reserve_attempt=None) -> dict:
-    """Execute at most three real HTTP attempts; injected transport is for tests.
+async def investigate(snapshot: dict, emit, *, transport=None, reserve_attempt=None,
+                      allowed_models=(PRIMARY_MODEL, FALLBACK_MODEL), attempt_seconds=None, deadline_seconds=None) -> dict:
+    """Execute at most three real HTTP attempts through transport (default: direct OpenRouter).
 
     emit(event) and reserve_attempt() may be sync or async. A false reservation
     ends the investigation without a network request. All data is copied first.
+    allowed_models=None trusts the transport's own model routing (the provider pool).
     """
+    attempt_seconds = attempt_seconds or ATTEMPT_SECONDS
+    deadline_seconds = deadline_seconds or DEADLINE_SECONDS
     snap = _snapshot(snapshot)
     started = time.monotonic()
     evidence = {}
@@ -443,7 +447,7 @@ async def investigate(snapshot: dict, emit, *, transport=None, reserve_attempt=N
         await announce("agent_activity", stage="degraded", message=failure)
     else:
         while metadata["attempts"] < MAX_ATTEMPTS:
-            remaining = DEADLINE_SECONDS - (time.monotonic() - started)
+            remaining = deadline_seconds - (time.monotonic() - started)
             if remaining <= 0:
                 failure = "Investigation deadline reached"
                 break
@@ -461,7 +465,7 @@ async def investigate(snapshot: dict, emit, *, transport=None, reserve_attempt=N
             await announce("agent_activity", stage="thinking", attempt=metadata["attempts"], model=model,
                            message="Reviewing observed evidence" if not final_attempt else "Preparing final assessment")
             try:
-                response = await asyncio.wait_for(_call(send, payload, min(ATTEMPT_SECONDS, remaining)), timeout=min(ATTEMPT_SECONDS, remaining))
+                response = await asyncio.wait_for(_call(send, payload, min(attempt_seconds, remaining)), timeout=min(attempt_seconds, remaining))
             except asyncio.CancelledError:
                 raise
             except (ProviderFailure, httpx.HTTPError, asyncio.TimeoutError) as exc:
@@ -475,7 +479,7 @@ async def investigate(snapshot: dict, emit, *, transport=None, reserve_attempt=N
                 if account_limit or code in (400, 401, 402, 403) or switched:
                     break
                 delay = getattr(exc, "retry_after", 0)
-                if delay >= DEADLINE_SECONDS - (time.monotonic() - started):
+                if delay >= deadline_seconds - (time.monotonic() - started):
                     break
                 if delay:
                     await asyncio.sleep(delay)
@@ -490,7 +494,8 @@ async def investigate(snapshot: dict, emit, *, transport=None, reserve_attempt=N
             actual_model = response.get("model", model)
             # Never conceal a routing change in the evidence record.
             metadata["model"] = actual_model
-            if actual_model not in {PRIMARY_MODEL, FALLBACK_MODEL}:
+            metadata["provider"] = response.get("provider", metadata["provider"])
+            if allowed_models is not None and actual_model not in allowed_models:
                 failure = "Provider returned a model outside the free allowlist"
                 break
             usage = response.get("usage") or {}

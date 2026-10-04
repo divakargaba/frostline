@@ -17,6 +17,17 @@ def _no_saved_model(monkeypatch):
     monkeypatch.setattr(src.model, "_cached", None)
 
 
+@pytest.fixture(autouse=True)
+def _no_llm_providers(monkeypatch):
+    """Tests never see a developer's provider keys; each test opts in explicitly."""
+    for name in ["GEMINI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY", "OPENROUTER_FREE_MODELS", "LLM_MODE"]:
+        monkeypatch.delenv(name, raising=False)
+    import src.llm
+    src.llm.reset_provider_pool()
+    yield
+    src.llm.reset_provider_pool()
+
+
 @pytest.fixture
 def fake_3w_instance() -> pd.DataFrame:
     """A synthetic 3W-style instance with ~300 rows at 1-second intervals.

@@ -23,7 +23,7 @@ echo ""
 
 # 1. Health check
 echo "Checking backend health..."
-HEALTH=$(curl -sf "$BASE/capabilities" 2>/dev/null || echo '{"model_ready":false}')
+HEALTH=$(curl -sf "$BASE/catalog" 2>/dev/null || echo '{"model_ready":false}')
 MODEL_READY=$(echo "$HEALTH" | python3 -c "import sys,json; print(json.load(sys.stdin).get('model_ready', False))")
 if [ "$MODEL_READY" != "True" ]; then
     echo "ERROR: Fleet model not ready. Run: python scripts/train_fleet_model.py"
@@ -31,44 +31,39 @@ if [ "$MODEL_READY" != "True" ]; then
 fi
 echo "Fleet model ready."
 
-# 2. Create session (guided mode, speed=120 for fast replay)
+# 2. Create session (speed=120; the replay starts as soon as the recordings load)
+if [ "${USE_LLM:-0}" = "1" ]; then USE_LLM_JSON=true; else USE_LLM_JSON=false; fi
 echo "Creating fleet session..."
 SESSION=$(curl -sf -X POST "$BASE/sessions" \
     -H "Content-Type: application/json" \
-    -d '{"speed": 120, "mode": "continuous"}')
+    -d "{\"speed\": 120, \"use_llm\": $USE_LLM_JSON}")
 SESSION_ID=$(echo "$SESSION" | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")
 echo "Session ID: $SESSION_ID"
 
-# 3. Start replay
-echo "Starting replay..."
-curl -sf -X POST "$BASE/sessions/$SESSION_ID/control" \
-    -H "Content-Type: application/json" \
-    -d '{"action": "start"}' > /dev/null
-
-# 4. Wait for completion (poll every 5s)
+# 3. Wait for completion (poll every 5s)
 echo "Waiting for replay to finish..."
 while true; do
     SNAP=$(curl -sf "$BASE/sessions/$SESSION_ID")
     STATUS=$(echo "$SNAP" | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")
     INDEX=$(echo "$SNAP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(f\"{d['index']}/{d['total']}\")")
     echo "  Status: $STATUS, Progress: $INDEX"
-    if [ "$STATUS" = "completed" ] || [ "$STATUS" = "ended" ] || [ "$STATUS" = "error" ]; then
+    if [ "$STATUS" = "completed" ] || [ "$STATUS" = "cancelled" ] || [ "$STATUS" = "failed" ]; then
         break
     fi
     sleep 5
 done
 
-# 5. Export
+# 4. Export
 OUTFILE="$OUTDIR/fleet-recording-${SESSION_ID:0:8}.json"
 echo "Exporting to $OUTFILE..."
 curl -sf "$BASE/sessions/$SESSION_ID/export" -o "$OUTFILE"
 
-# 6. Summary
+# 5. Summary
 WELLS=$(python3 -c "
 import json
 data = json.load(open('$OUTFILE'))
 for w in data['run']['wells']:
-    print(f\"  {w['well_id']}: status={w['status']}, investigation={w['investigation']}\")
+    print(f\"  {w['id']}: status={w['status']}, investigation={w['investigation']}\")
 ")
 echo ""
 echo "=== Recording complete ==="

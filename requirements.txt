@@ -5,7 +5,6 @@ scikit-learn
 lightgbm
 fastapi
 uvicorn
-sse-starlette
 python-dotenv
 rank_bm25
 pyyaml

@@ -15,8 +15,6 @@ from backend.fleet import ATTEMPTS, PROVIDER_CIRCUIT, SESSIONS, FleetSession, WE
 
 @pytest.fixture(autouse=True)
 def isolated_sessions(monkeypatch):
-    # Test key choices must not be overwritten by the developer's local .env.
-    monkeypatch.setattr("backend.fleet.load_local_env", lambda: None)
     SESSIONS.clear()
     ATTEMPTS.clear()
     PROVIDER_CIRCUIT.update(until=0.0, reason="")
@@ -68,19 +66,25 @@ def test_real_model_alarm_persists_and_acknowledgment_does_not_clear_it():
     assert "waiting for engineering" in session.wells[well]["incident"]["note"]
 
 
-def test_injection_targets_future_input_of_only_selected_well():
+def pressure_outage(session, well, minute):
+    # Simulate a pressure outage in one session's private copy of the source feed.
+    session.sources = deepcopy(session.sources)
+    future = session.sources[well]["future"]
+    future.loc[future.index[minute], ["P-PDG", "P-TPT", "P-MON-CKP"]] = float("nan")
+
+
+def test_pressure_outage_affects_only_that_well_and_not_the_shared_source():
     session = ready()
     session.advance()
     other_before = session.wells["WELL-00019"]["frames"][-1]["sensors"].copy()
     source_before = source_frames()[WELLS[0]]["future"].copy()
-    session.control("inject", well_id=WELLS[0], fault="pressure_offline")
+    pressure_outage(session, WELLS[0], 1)
     session.advance()
     assert session.wells[WELLS[0]]["status"] == "unavailable"
     assert session.wells[WELLS[0]]["frames"][-1]["risk_score"] is None
     assert session.wells["WELL-00019"]["frames"][-1]["sensors"]["P-TPT"] is not None
     assert session.wells["WELL-00019"]["frames"][-2]["sensors"] == other_before
     assert source_frames()[WELLS[0]]["future"].equals(source_before)
-    assert any(e.get("excluded_from_benchmark") for e in session.audit)
 
 
 def test_quotas_are_shared_across_sessions_and_session_budget_cannot_overrun():
@@ -108,6 +112,7 @@ def test_slow_investigation_does_not_stop_feeds_and_superseded_result_is_ignored
             await gate.wait()
             return {"brief": "An obsolete result", "source": "live_llm", "next_action": "Continue", "evidence": [], "recheck_minutes": 15}
         monkeypatch.setattr(src.fleet_llm, "investigate", slow)
+        monkeypatch.setenv("GROQ_API_KEY", "test-only-no-network")
         s = FleetSession(use_llm=True); SESSIONS[s.id] = s
         await s.prepare(); s.advance()
         for well in WELLS:
@@ -142,6 +147,7 @@ def test_running_review_has_no_duplicate_and_rechecks_at_exact_five_minutes(monk
                     "evidence": [], "recheck_minutes": 5}
 
         monkeypatch.setattr(src.fleet_llm, "investigate", delayed)
+        monkeypatch.setenv("GROQ_API_KEY", "test-only-no-network")
         session = FleetSession(use_llm=True)
         SESSIONS[session.id] = session
         await session.prepare()
@@ -193,6 +199,7 @@ def test_provider_circuit_blocks_other_sessions_without_spending_attempts(monkey
                     "metadata": metadata}
 
         monkeypatch.setattr(src.fleet_llm, "investigate", limited)
+        monkeypatch.setenv("GROQ_API_KEY", "test-only-no-network")
         first, other = FleetSession(use_llm=True), FleetSession(use_llm=True)
         SESSIONS.update({first.id: first, other.id: other})
         await first.prepare()
@@ -248,17 +255,26 @@ def test_configured_key_does_not_claim_live_mode_until_success(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_missing_provider_is_explicit_and_keeps_numerical_risk(monkeypatch):
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+def test_llm_requested_without_provider_falls_back_to_rules_and_says_so(monkeypatch):
+    import src.fleet_llm
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("No provider is configured; the LLM must not be called")
+
+    monkeypatch.setattr(src.fleet_llm, "investigate", forbidden)
+
     async def scenario():
         s = FleetSession(use_llm=True); SESSIONS[s.id] = s
+        snap = s.snapshot()
+        assert snap["use_llm"] is False and snap["llm_configured"] is False and snap["llm_providers"] == []
+        assert "no provider key" in snap["readiness_message"]
         await s.prepare()
         for _ in range(40): s.advance()
         await s.investigate_well("WELL-00019")
         well = s.wells["WELL-00019"]
         assert well["status"] == "attention"
         assert well["assessment"]["source"] == "rules"
-        assert well["investigation"] == "unavailable"
+        assert well["investigation"] == "complete"
         assert s.requests_used == 0
         assert any(e["kind"] == "tool_call" for e in s.audit)
     asyncio.run(scenario())
@@ -309,7 +325,8 @@ def test_local_checks_complete_without_provider_and_paused_operator_flow_is_expl
         await session.investigate_well(well)
         item = session.wells[well]
         assert item["investigation"] == "complete"
-        assert session.requests_used == 0 and session.snapshot()["llm_deferred"]
+        assert session.requests_used == 0 and session.snapshot()["use_llm"] is False
+        assert session.snapshot()["llm_configured"] and session.snapshot()["agent_mode"] == "rules"
         assert all(t["status"] == "done" for t in item["assessment"]["tools"])
         incident_id = item["incident"]["id"]
         completed_trigger = item["followup"]["trigger"]
@@ -412,7 +429,7 @@ def test_outage_review_trace_reports_abstention_instead_of_invented_scores():
     async def scenario():
         session = FleetSession()
         await session.prepare()
-        session.control("inject", well_id=WELLS[0], fault="pressure_offline")
+        pressure_outage(session, WELLS[0], 0)
         session.advance()
         await session.investigate_well(WELLS[0])
         item = session.wells[WELLS[0]]
@@ -437,3 +454,117 @@ def test_recurring_checks_do_not_erase_incident_milestones():
     assert entries[0]["kind"] == "detected"
     assert entries[-1]["summary"] == "Routine check 99"
     assert {e["kind"] for e in entries} == {"detected", "seen", "checked", "review_completed", "recovered", "recheck"}
+
+
+SNAPSHOT_KEYS = {"id", "status", "speed", "elapsed_seconds", "index", "total", "agent_mode", "use_llm", "llm_configured", "llm_providers",
+                 "model_ready", "readiness_message", "wells", "priority", "last_event_id", "requests_used", "request_budget", "error"}
+
+
+def test_snapshot_contract_has_no_guided_or_fault_fields():
+    session = ready()
+    session.advance()
+    snap = session.snapshot()
+    assert set(snap) == SNAPSHOT_KEYS
+    assert snap["status"] == "running" and snap["use_llm"] is False and snap["agent_mode"] == "rules"
+    prediction = snap["wells"][0]["prediction"]
+    assert set(prediction) == {"scores", "model_id", "threshold", "persistence_minutes", "alarm_streak", "alarm_active"}
+    assert set(prediction["scores"]) == {"normal", "hydrate", "lookalike"}
+    assert not hasattr(session, "guide") and not hasattr(session, "fault") and not hasattr(session, "mode")
+    # Published snapshots share immutable frames but never the mutable well state.
+    session.publish("test")
+    payload = session.events[-1]["payload"]
+    payload["wells"][0]["status"] = "changed"
+    assert session.wells[WELLS[0]]["status"] != "changed"
+    json.dumps(session.events[-1], allow_nan=False)
+
+
+def test_catalog_reports_configured_providers_by_name_only(monkeypatch):
+    with TestClient(app) as client:
+        catalog = client.get("/api/fleet/catalog").json()
+        assert set(catalog) == {"wells", "default_speed", "speeds", "model_ready", "llm_configured", "llm_providers", "readiness_message"}
+        assert catalog["llm_configured"] is False and catalog["llm_providers"] == []
+        assert catalog["speeds"] == [12, 30, 60, 120] and catalog["default_speed"] == 12
+        monkeypatch.setenv("GROQ_API_KEY", "secret-groq-value")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "secret-openrouter-value")
+        response = client.get("/api/fleet/catalog")
+        catalog = response.json()
+        assert catalog["llm_configured"] is True and catalog["llm_providers"] == ["groq", "openrouter"]
+        assert "secret" not in response.text
+        monkeypatch.setenv("LLM_MODE", "mock")
+        assert client.get("/api/fleet/catalog").json()["llm_configured"] is False
+
+
+def test_sessions_default_to_rules_and_honor_use_llm(monkeypatch):
+    with TestClient(app) as client:
+        default = client.post("/api/fleet/sessions", json={})
+        assert default.status_code == 201
+        body = default.json()
+        assert set(body) == SNAPSHOT_KEYS
+        assert body["speed"] == 12 and body["use_llm"] is False and body["agent_mode"] == "rules"
+        requested = client.post("/api/fleet/sessions", json={"speed": 60, "use_llm": True}).json()
+        assert requested["use_llm"] is False and "no provider key" in requested["readiness_message"]
+        monkeypatch.setenv("GEMINI_API_KEY", "test-only-no-network")
+        live = client.post("/api/fleet/sessions", json={"speed": 120, "use_llm": True}).json()
+        assert live["use_llm"] is True and live["llm_providers"] == ["gemini"]
+        for run in [body, requested, live]:
+            client.post(f"/api/fleet/sessions/{run['id']}/control", json={"action": "cancel"})
+
+
+def test_removed_controls_are_rejected_and_llm_toggles_mid_run(monkeypatch):
+    session = ready()
+    path = f"/api/fleet/sessions/{session.id}/control"
+    with TestClient(app) as client:
+        for body in [{"action": "inject", "well_id": WELLS[0], "fault": "pressure_offline"}, {"action": "next_moment"}, {"action": "mode", "mode": "guided"}]:
+            assert client.post(path, json=body).status_code == 422
+        assert client.post(path, json={"action": "llm"}).status_code == 409
+        assert client.post(path, json={"action": "llm", "use_llm": True}).json()["use_llm"] is False
+        monkeypatch.setenv("GROQ_API_KEY", "test-only-no-network")
+        assert client.post(path, json={"action": "llm", "use_llm": True}).json()["use_llm"] is True
+        assert client.post(path, json={"action": "llm", "use_llm": False}).json()["use_llm"] is False
+        paused = client.post(path, json={"action": "pause"}).json()
+        assert paused["status"] == "paused"
+        assert client.post(path, json={"action": "speed", "speed": 30}).json()["speed"] == 30
+    for s in list(SESSIONS.values()):
+        if s.status not in {"completed", "cancelled", "failed"}:
+            s.control("cancel")
+
+
+def test_step_advances_one_minute_and_finishes_reviews_before_reporting():
+    async def scenario():
+        session = FleetSession(120)
+        SESSIONS[session.id] = session
+        session.task = asyncio.create_task(session.run())
+        while session.status == "preparing":
+            await asyncio.sleep(.01)
+        session.control("pause")
+        index = session.index
+        session.control("step")
+        for _ in range(500):
+            if session.audit[-1]["kind"] == "stepped":
+                break
+            await asyncio.sleep(.01)
+        assert session.audit[-1]["kind"] == "stepped"
+        assert session.index == index + 1 and session.status == "paused"
+        assert not session.jobs and not session.pending
+        session.control("cancel")
+        await asyncio.sleep(0)
+    asyncio.run(scenario())
+
+
+def test_scores_endpoint_reads_the_baseline_ladder():
+    with TestClient(app) as client:
+        rows = client.get("/api/scores").json()["rows"]
+    assert [r["name"] for r in rows] == ["B0", "B1", "B1-revised", "M1", "M3"]
+    assert set(rows[0]) == {"name", "description", "caught", "total_events", "missed", "false_alarms_per_day", "mean_lead_time_min", "misdiagnosis_rate", "notes"}
+    b0, b1 = rows[0], rows[1]
+    assert b0["caught"] == 0 and b0["total_events"] == 12 and b0["mean_lead_time_min"] is None
+    assert b1["mean_lead_time_min"] == 420.0 and isinstance(b1["false_alarms_per_day"], float)
+    assert "agent_starter" in b1["notes"]
+
+
+def test_removed_routes_are_gone():
+    with TestClient(app) as client:
+        for path in ["/health", "/wells", "/stream/seed", "/results", "/api/research", "/api/scenarios"]:
+            assert client.get(path).status_code == 404
+        assert client.post("/tts").status_code in {404, 405}
+        assert client.get("/api/health").json()["status"] == "ok"

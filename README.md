@@ -2,7 +2,7 @@
 
 A Case 9 prototype for offshore operators: four independent Petrobras 3W sensor replays, a trained event model, a priority queue and an agent that investigates changing evidence. The interface keeps the map, trends and next operator action together.
 
-**Current verification:** numerical monitoring, scenario-specific checklists, saved operator findings, scheduled rechecks and incident recovery run locally. LLM investigations use a multi-provider pool (Gemini → Groq → OpenRouter) when keys are configured; otherwise the deterministic rule-based pipeline handles all decisions. BM25 RAG over 14 playbook documents supports evidence-grounded operator briefs. No production sensor connection or equipment control is claimed.
+**Current verification:** numerical monitoring, scenario-specific checklists, saved operator findings, scheduled rechecks and incident recovery run locally. One runtime pipeline: the fleet model scores every source minute, a shared watcher escalates, and a review queue investigates. Reviews use rule-based evidence checks by default; the **LLM** toggle routes them through a multi-provider pool (Gemini → Groq → OpenRouter) when a key is configured. BM25 RAG over 14 playbook documents supports evidence-grounded operator briefs. No production sensor connection or equipment control is claimed.
 
 ## Run the dashboard
 
@@ -39,23 +39,15 @@ Open **http://127.0.0.1:8000**. API documentation: **http://127.0.0.1:8000/docs*
 
 After setup, `./scripts/start_dashboard.ps1` starts the built app in a hidden process and prints its URL. It checks the existing server instead of replacing an unrelated process. Logs are in ignored `logs/`.
 
-## Four-well operator demo
+## Monitor
 
-**Guided demo is the default.** It gives you time to explain each decision; the historical replay clock moves only when you continue.
+1. Open **Monitor** and press **Start**. Four held-out recordings play together at 12× (one source minute every five seconds); 30×, 60× and 120× are available. Negative chart minutes are warm-up history.
+2. **Rules | LLM** chooses the investigator. Rules is the default and needs no key. LLM is enabled when `GEMINI_API_KEY`, `GROQ_API_KEY` or `OPENROUTER_API_KEY` is set in `.env`; it can be switched mid-run. LLM call usage appears in the footer.
+3. **Model predictions** shows the LightGBM normal / hydrate / look-alike scores per well, the 60-minute hydrate trend against the 0.70 threshold, and the alarm call (alarm, rising n/10, or top class). Select a row or map pin to follow a well.
+4. The **Priority** rail orders wells by severity. **Acknowledge** records that you have seen an incident; **Note** saves an observation; **Operator checks** saves confirmed / not confirmed / unavailable findings; **Recheck** requests a new review. None of these clear a sensor concern or become training labels.
+5. **Pause** stops new readings; **+1 min** reads one source minute while paused; restart creates a new run. **Evidence** shows the assessment, before/after comparison, incident history, sensor table and investigation steps. **Export run** downloads the journal.
 
-1. Press **Start walkthrough**. The four recordings load into a paused overview. Negative chart minutes show preceding history; the new replay readings have not started yet.
-2. Press **Next important moment**. The system processes every intervening minute, then finishes the evidence checks and pauses at a meaningful detected change. It does not seek using event labels or skip model inference.
-3. Read the pause reason and select **View Well ...**, or select any well on the map. The selected well stays fixed while you read. Map positions and the alignment of independent recording dates are illustrative.
-4. **Acknowledge alert** records that you have seen the incident. It keeps playback paused. Open **Operator checks** to save a confirmed, not-confirmed or unavailable finding, or **Add observation**. Findings remain human reports, not training labels or proof of physical recovery.
-5. Press **Continue demo** when ready. If you requested an operator review, it checks the same source reading first and pauses with the follow-up result. Continuing again advances to the next detected change. **Evidence** compares assessments and shows the incident history.
-6. Try a **telemetry fault** on one selected well. Advancing to the next moment demonstrates missing pressure evidence while the other wells keep their own readings. The fault lasts five new readings unless restored early; injected data is excluded from benchmark scores.
-7. Open **Results** for the measured model and full-policy evaluations. **Export run** preserves the complete journal.
-
-The guided mode pauses for the first watch scenario on each well, attention transitions, critical telemetry changes and recovery. Ordinary recurring assessments do not create repeated presentation stops. The sensor states and priority list still reflect every processed reading. Well 19's persistent model concern appears at approximately source minute 35; its diagnosis is not assigned from historical labels.
-
-**Continuous replay** remains available for uninterrupted monitoring. Its default **Comfortable** pace advances one data minute every **five seconds** (12x); faster choices advance one minute every 2, 1 or 0.5 seconds. The full excerpt covers three source hours. Switching mode pauses first so playback never speeds up unexpectedly.
-
-**Pause** stops further source readings; an already running assessment may finish. **Read 1 minute** advances one source minute. It finishes its queued evidence checks and returns to a paused checkpoint in either mode. **Continue** resumes the same history and incidents. Reloading the browser reconnects to the same mode, checkpoint and selected well. Restarting the server clears in-memory sessions, so export before restarting. Four sessions may run concurrently; eight recent sessions are retained.
+Reloading the browser reconnects to the same run. Restarting the server clears in-memory sessions; export first. Four runs may be active at once.
 
 ### What makes it autonomous
 
@@ -65,7 +57,7 @@ The default investigation runs locally. It checks sensor quality, the frozen mod
 
 Automatic rechecks use source time: one minute for uncertain/changing or degraded evidence, five minutes for a persistent model concern, and thirty for normal monitoring. New evidence can trigger a review sooner. Two reviews run concurrently across sessions. Acknowledgment records ownership, saved findings record the operator's report, and recovery depends on fresh sensor evidence. Paused runs retain queued work. Ended runs accept notes/findings but cannot produce new measurements. **Export run** preserves the journal; server restarts clear in-memory sessions.
 
-The existing bounded OpenRouter adapter is retained for future opt-in work and mocked tests. Public replay sessions do not call it, request a key or claim live reasoning. No LLM fine-tuning, automatic retraining from operator notes, or live-provider validation is part of this completion.
+With **LLM** on, the same review queue calls `src/fleet_llm.investigate`: a bounded tool loop over the observed window, model scores, sensor quality and BM25 playbook search, through the Gemini → Groq → OpenRouter pool with a per-run request budget, rate limiting and a circuit breaker. Every LLM answer is validated against the numerical evidence; an invalid or failed answer falls back to the rule assessment. The LLM can raise but never lower the numerical status. Without a key the run stays on rules. Live-provider decision quality has not been scored.
 
 ### What data we use and what gets trained
 
@@ -107,36 +99,17 @@ A flag is any watch/attention overlap, **not a correct diagnosis**. The restrict
 
 ### Completion scope
 
-The four-well non-LLM build now includes the causal feed/model, shared watcher, priority map and graphs, scenario checklists, persistent acknowledgment and findings, scheduled/manual rechecks, evidence comparisons, recovery history, fault isolation, export, validation-selected model comparisons and full numerical-policy evaluation. LLM work is deferred. An operator/mentor interview, live industrial connection, and production validation remain external follow-up work; they are not simulated completion claims.
-
-## Separate seed baseline and improvement demo
-
-**More → Seed sandbox** retains the original synthetic, single-well workflow. Its demo controls and advanced diagnostics show the full journal and the 24-candidate policy search.
-
-Choose **Full demo** in Demo controls and press **Start demo** at 4× or 8× to watch the full sequence:
-
-1. **Observe:** consume a 52-hour validation window one reading at a time. A quality check runs on each input; anomalies and scheduled rechecks trigger additional tools. The agent decides ALERT, WATCH or DISMISS, then the evaluator reveals the historical label.
-2. **Improve:** actually fit and evaluate 24 candidates on the separate calibration/validation periods. Each result shows why it was kept or rejected. Promote only if validation cost improves, refit the selected quantiles on the first 20 days, and freeze the policy.
-3. **Prove:** run the frozen policy over all 240 final-test hours. These decisions and scores are computed as inputs arrive.
-
-**Pause** stops further tool execution. **Step** finishes the current reading or evaluates one candidate, then pauses at the next boundary. A browser reload reconnects to the same session and its ordered event journal. Export a run to save every input, tool result, decision, candidate and score.
-
-For a judge interaction, choose **Fault sandbox** in Demo controls. Pause, inject **Sensor outage**, then step: the agent investigates sensor quality and chooses WATCH. Restore input, then inject **Deterioration** to trigger a confirmed rule and local notification. **Pressure drop** tests corroboration; **Frozen readings** triggers a quality investigation after six unchanged hourly readings. Injections apply to future inputs. Changed rows and their next five history-dependent rows are excluded from scores; candidate selection always uses untouched historical validation data.
-
-This separate seed workflow is a **stateful deterministic controller with conditional tool execution**. Notifications stay inside the local demo. Rechecks and cooldown use source timestamps. It does not call the fleet LLM adapter.
+The single fleet pipeline includes the causal feed/model, shared watcher, per-well model predictions, priority map and graphs, scenario checklists, persistent acknowledgment and findings, scheduled/manual rechecks, evidence comparisons, recovery history, export, the optional LLM investigator, validation-selected model comparisons and full numerical-policy evaluation. The earlier `/stream` agent replay, the synthetic seed sandbox, guided walkthrough and fault injection were removed; the seed experiment and the 5-class M1 model remain offline scoring tools. An operator/mentor interview, live industrial connection, and production validation remain external follow-up work.
 
 ## What is implemented
 
-- **Well map:** four independent real-data feeds, a map above trends, a priority/assessment rail, acknowledgment, saved checks, observation history, evidence comparisons and bounded local investigations. Narrow screens put the next action before the graphs.
-- **Recorded replays:** eight historical replay scenarios after the optional real-data run, sensor charts, playback/seek/speed controls, evaluator-label toggle, decisions and four inspectable evidence steps.
-- **Improvement lab:** the official P5 starter, P10 sensitivity, second-sensor confirmation, persistence, EWMA, and bounded automatic selection among 24 policies.
-- **Seed operating loop:** sensor-quality check → conditional investigation → ALERT / WATCH / DISMISS → scheduled recheck → notification cooldown. Tools execute while the live session advances; normal readings need fewer calls than anomalies.
-- **Seed improvement loop:** historical validation outcomes score candidates; promote only a strict improvement over the incumbent, refit the chosen quantiles on the first 20 days, freeze, then evaluate the final 10 days.
-- **Real-world validation:** a separate three-class LightGBM pilot on Petrobras 3W, with whole wells held out, a confusion matrix, fold audit, and every recording including misses.
-- **Research & method:** sources, architecture, provenance, claim boundaries, and a short judge-demo sequence.
-- FastAPI JSON and SSE endpoints, result export, and a reproducible CLI.
+- **Monitor:** four independent real-data feeds, map, trends, model predictions, priority/assessment rail, acknowledgment, saved checks, observations, evidence comparisons, scheduled rechecks and journal export. Narrow screens put the next action before the graphs.
+- **Investigator:** rule-based evidence checks by default; optional LLM tool loop over the provider pool with BM25 playbook retrieval, validation and rule fallback.
+- **Scores:** the B0 → B1 → B1-revised → M1 → M3 ladder (`results/summary.csv`), the fleet model holdout report and the full monitoring-policy evaluation.
+- **Offline tooling:** `eval.py` (seed baselines), `scripts/train_model.py` (5-class M1), `scripts/train_fleet_model.py`, `scripts/evaluate_fleet_workflow.py`, `python -m src.real_pilot`.
+- FastAPI JSON and SSE endpoints.
 
-`CLAUDE.md` and older modules also describe a broader planned architecture. Hydrate thermodynamics, inhibitor dosing, blockage forecasting, vector retrieval and voice remain **unimplemented**. Their original tests remain marked `pending`. The fleet retains a deferred LLM tool loop and small project-guidance search; public runs use the deterministic evidence checks. The dashboard does not use the hand-authored metrics in `frontend/mocks/`.
+Hydrate thermodynamics, inhibitor dosing, blockage forecasting, vector retrieval and voice remain **unimplemented**; their original tests remain marked `pending`.
 
 ## Combined results: baseline to agent pipeline
 
@@ -202,9 +175,9 @@ cd frontend
 npm run build
 ```
 
-Latest local verification: **172 tests passed, 42 future-architecture tests excluded**, plus a successful frontend build. Guided replay checks cover frozen checkpoints, complete four-well causal processing, settled follow-ups, one-minute stepping, mode changes, pause/cancel and end-of-recording behavior. Browser checks covered acknowledgment feedback, saved findings, paused/restarted reviews, evidence comparisons, reload persistence, a per-well pressure outage and recovery, Results disclosures, and a narrow layout without horizontal overflow.
+Latest local verification: **194 tests passed, 15 future-architecture tests excluded**, plus a successful frontend build. Browser checks covered a full Monitor run, model predictions, the LLM toggle without a key, the Scores page, and a narrow layout without horizontal overflow.
 
-Tests cover starter parity, held-out-well isolation, future-input invariance, minute/stream feature parity, model promotion, missing-data gaps, alert recovery, per-well fault isolation, scheduled rechecks, stale-response rejection, quotas, reconnection/export, stale incident/check-definition rejection, consistent evidence timestamps, truthful outage traces and API validation. Mocked provider tests exercise adaptive multi-round tools, schema validation, injection resistance, numerical escalation checks and failure handling. They do not prove live-provider behavior. The 42 pending tests cover the original unimplemented extended architecture and are excluded, not counted as passing.
+Tests cover starter parity, held-out-well isolation, future-input invariance, minute/stream feature parity, model promotion, missing-data gaps, alert recovery, scheduled rechecks, stale-response rejection, quotas, reconnection/export, stale incident/check-definition rejection, consistent evidence timestamps, truthful outage traces and API validation. Mocked provider tests exercise the LLM toggle end to end (pool transport, playbook, validation), adaptive multi-round tools, schema validation, injection resistance and failure handling. They do not prove live-provider behavior; run `python scripts/llm_smoke_test.py` with a key for one real call. The 15 pending tests cover the original unimplemented extended architecture and are excluded, not counted as passing.
 
 ## Architecture
 
@@ -232,42 +205,31 @@ flowchart LR
 
 ## API
 
+See `docs/api_fleet.md` for payloads.
+
 | Route | Behavior |
 |---|---|
-| `GET /api/fleet/catalog` | Four fixed wells, guided-mode and comfortable-speed defaults, model readiness and LLM-deferred status |
-| `POST /api/fleet/sessions` | Create a paused guided replay by default; continuous pace supports 12x, 30x, 60x or 120x |
-| `GET /api/fleet/sessions/{id}` | Latest field state and per-well evidence |
-| `POST /api/fleet/sessions/{id}/control` | Next important moment, mode, pause, resume, step, speed and targeted fault; restart creates a new session |
+| `GET /api/health` | Service status, fleet capabilities and LLM usage |
+| `GET /api/scores` | Baseline ladder from `results/summary.csv` |
+| `GET /api/fleet/catalog` | Four fixed wells, speeds, model readiness, `llm_configured` and `llm_providers` |
+| `POST /api/fleet/sessions` | Start a continuous run: `{speed: 12\|30\|60\|120, use_llm: bool}` |
+| `GET /api/fleet/sessions/{id}` | Latest field state, per-well evidence and model predictions |
+| `POST /api/fleet/sessions/{id}/control` | Pause, resume, step, cancel, speed, or `llm` to toggle the investigator |
 | `POST /api/fleet/sessions/{id}/incidents/{well}/actions` | Acknowledge, save a check result, report an observation, request a recheck or complete a review |
 | `GET /api/fleet/sessions/{id}/events` | Ordered SSE snapshots and reconnection cursors |
-| `GET /api/fleet/sessions/{id}/export` | Complete source/decision/operator journal |
+| `GET /api/fleet/sessions/{id}/export` | Source/decision/operator journal |
 | `GET /api/fleet/results` | Frozen model protocol, selection rounds and measured holdout results |
 | `GET /api/fleet/workflow-results` | Shared watcher metrics and separate synthetic lifecycle checks |
-| `GET /api/live/catalog` | Live scenarios and controller/source disclosure |
-| `POST /api/live/sessions` | Create a paused mission, sandbox or final-test session |
-| `POST /api/live/sessions/{id}/control` | Resume, pause, step, cancel, change speed or inject a fault |
-| `GET /api/live/sessions/{id}` | Current state, current-phase readings and recent journal |
-| `GET /api/live/sessions/{id}/events?after=0` | Incremental SSE; reconnect using event ID or `Last-Event-ID` |
-| `GET /api/live/sessions/{id}/export` | Download the full run journal and measured outcomes |
-| `GET /api/research` | Seed experiment plus available real-pilot evidence |
-| `GET /api/research/export` | Download the complete report as JSON |
-| `POST /api/experiments/run` | Reproduce the frozen seed protocol; no test-tuning controls |
-| `GET /api/scenarios` | Replay metadata and provenance |
-| `GET /api/scenarios/{id}` | Sensor frames, causal decisions and evaluator-only labels |
-| `GET /stream/{id}?start=0&delay_ms=50` | SSE tick, decision and complete events |
-| `GET /api/health` | Local service and real-pilot availability |
-| `GET /results`, `GET /wells` | Research report and replay catalog aliases |
-| `POST /tts` | Explicit 503: optional voice is not configured |
 
 ## Five-minute judge walkthrough
 
 - **0:00–0:35 — User/problem:** an operator needs to know which well to inspect first, with enough evidence to act without reading every chart.
 - **0:35–1:15 — Architecture:** explain sensors → quality/model → watcher → evidence tools → priority/action/recheck. Show the diagram above.
-- **1:15–2:45 — Working demo:** use Next important moment to reach detected changes, select the affected well, explain the stable evidence, acknowledge it, save a checklist finding, and show the next recheck and evidence comparison. Inject a pressure outage on a different well to demonstrate isolation and uncertainty handling.
-- **2:45–4:10 — Improvement:** show Results. Explain baseline → quality checks → validation-selected threshold/persistence, including the delay/false-alarm tradeoff. The seed baseline offers the official 20/10-day comparison separately.
+- **1:15–2:45 — Working demo:** start a run at 60×, watch Model predictions as Well 19's hydrate score crosses the threshold, pause, select the well, explain the evidence, acknowledge it, save a checklist finding, and show the next recheck and evidence comparison. If a key is configured, switch to LLM and show the playbook-grounded review.
+- **2:45–4:10 — Improvement:** show Scores: the B1 → B1-revised improvement round, then the fleet holdout. Explain baseline → quality checks → validation-selected threshold/persistence, including the delay/false-alarm tradeoff. The seed baseline offers the official 20/10-day comparison separately.
 - **4:10–5:00 — Value and next pilot:** propose read-only shadow monitoring for one operator team, measure review time and unnecessary escalations, collect adjudicated outcomes, and then validate across more hydrate wells. More wells would use partitioned feed workers plus a shared priority/provider queue; this prototype demonstrates four, not production scale. Do not claim savings or mentor validation that have not been measured.
 
-For a network-independent demo, leave provider mode visibly **Model + rules** and show the numerical loop plus saved results. Capture the dashboard and export a run before presentation. LLM work remains deferred; enabling it would require an explicit integration change and genuine provider verification. A short mentor/operator conversation is still a team action: confirm the next-action wording and which false alarms are most disruptive.
+For a network-independent demo, leave the investigator on **Rules** and show the numerical loop plus saved results. Capture the dashboard and export a run before presentation. A short mentor/operator conversation is still a team action: confirm the next-action wording and which false alarms are most disruptive.
 
 ## Research and attribution
 

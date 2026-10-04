@@ -250,7 +250,8 @@ def backend_session(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-only-unusable-key")
     session = fleet.FleetSession(use_llm=True)
     session.status = "running"
-    session.bundle = {"model_id": "held-out-test-v1", "policy": {"activation_threshold": .5}}
+    from src.fleet_model import DEFAULT_POLICY
+    session.bundle = {"model_id": "held-out-test-v1", "policy": dict(DEFAULT_POLICY)}
     snap = snapshot()
     frame = pd.DataFrame([r["sensors"] for r in snap["readings"]], index=pd.to_datetime([r["t"] for r in snap["readings"]])).reindex(columns=agent.SENSORS)
     for well in fleet.WELLS:
@@ -273,7 +274,7 @@ def test_full_backend_adaptive_tools_escalate_priority_and_set_recheck(monkeypat
     async def request(payload, timeout):
         observed.append(deepcopy(payload))
         return planned.pop(0)
-    monkeypatch.setattr(agent, "_request", request)
+    monkeypatch.setattr(fleet, "llm_transport", lambda: request)
     asyncio.run(session.investigate_well(well))
     assert session.wells[well]["status"] == "attention"
     assert session.state[well]["agent_status"] == "attention"
@@ -301,7 +302,7 @@ def test_malicious_operator_report_cannot_override_prompt_or_existing_risk(monke
     async def request(payload, timeout):
         observed.append(deepcopy(payload))
         return planned.pop(0)
-    monkeypatch.setattr(agent, "_request", request)
+    monkeypatch.setattr(fleet, "llm_transport", lambda: request)
     asyncio.run(session.investigate_well(well))
     assert observed[0]["messages"][0]["content"] == agent.SYSTEM_PROMPT
     context = json.loads(observed[0]["messages"][1]["content"])["context"]
@@ -318,7 +319,7 @@ def test_backend_request_budget_prevents_network_calls_across_investigations(mon
     session.requests_used = session.request_budget
     async def unexpected_request(payload, timeout):
         raise AssertionError("Quota must stop the request before transport")
-    monkeypatch.setattr(agent, "_request", unexpected_request)
+    monkeypatch.setattr(fleet, "llm_transport", lambda: unexpected_request)
     asyncio.run(session.investigate_well(fleet.WELLS[0]))
     assert session.requests_used == session.request_budget
     result = next(e["result"] for e in reversed(session.audit) if e["kind"] == "assessment" and "result" in e)
@@ -335,7 +336,7 @@ def test_backend_does_not_apply_superseded_llm_result(monkeypatch):
         if len(planned) == 1:
             session.state[well]["revision"] += 1
         return planned.pop(0)
-    monkeypatch.setattr(agent, "_request", request)
+    monkeypatch.setattr(fleet, "llm_transport", lambda: request)
     asyncio.run(session.investigate_well(well))
     assert session.wells[well]["status"] == "watch"
     assert well in session.pending

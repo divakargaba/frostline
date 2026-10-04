@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   Activity,
@@ -22,10 +22,7 @@ import {
   SkipForward,
   Sparkles,
   Thermometer,
-  Unplug,
-  Waves,
   X,
-  Zap,
 } from "lucide-react";
 import {
   CartesianGrid,
@@ -36,6 +33,7 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { ApiError, api, number } from "./api";
 import type {
   AgentSource,
   FleetCatalog,
@@ -43,17 +41,16 @@ import type {
   FleetCheckResult,
   FleetEvent,
   FleetFrame,
-  FleetMode,
   FleetRun,
   FleetTimelineEvent,
   FleetWell,
-  FleetWorkflowReport,
   WellStatus,
 } from "./fleetTypes";
 import "./fleet.css";
 
-const SESSION_KEY = "frostline.fleet.session.v1";
-const SELECTED_WELL_KEY = "frostline.fleet.selectedWell.v1.";
+const SESSION_KEY = "frostline.fleet.session.v2";
+const SELECTED_WELL_KEY = "frostline.fleet.selectedWell.v2.";
+const DEFAULT_WELL = "WELL-00001";
 type OperatorAction =
   "acknowledge" | "observation" | "complete" | "check" | "recheck";
 type CheckSubmission = {
@@ -84,13 +81,8 @@ const wellDescriptions: Record<string, { name: string; scenario: string }> = {
   "WELL-00006": { name: "Well 06 — Scaling", scenario: "Scaling in production choke" },
   "WELL-00019": { name: "Well 19 — Hydrate", scenario: "Hydrate forming in production line" },
 };
-const sourceNames: Record<AgentSource, string> = {
-  live: "Live LLM assessment",
-  rules: "Model + rules",
-  recorded: "Recorded assessment",
-};
-const number = (value: number | null | undefined, digits = 1) =>
-  value == null || !Number.isFinite(value) ? "—" : value.toFixed(digits);
+const wellName = (well: FleetWell) =>
+  wellDescriptions[well.id]?.name || well.name;
 const elapsed = (seconds: number) =>
   `${Math.floor(seconds / 3600)
     .toString()
@@ -110,36 +102,28 @@ const time = (value?: string | null) =>
         timeZone: "UTC",
       })
     : "Awaiting readings";
-class ApiError extends Error {
-  constructor(
-    message: string,
-    public status: number,
-  ) {
-    super(message);
-  }
-}
-async function api<T>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch(
-    `/api/fleet${path}`,
-    body === undefined
-      ? undefined
-      : {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        },
-  );
-  if (!response.ok) {
-    const data = await response.json().catch(() => ({}));
-    throw new ApiError(
-      typeof data.detail === "string"
-        ? data.detail
-        : `Could not complete the request (${response.status}).`,
-      response.status,
-    );
-  }
-  return response.json();
-}
+const actionMessages: Record<OperatorAction, string> = {
+  acknowledge: "Acknowledged. Concern stays open.",
+  observation: "Note saved.",
+  check: "Finding saved.",
+  complete: "Review recorded.",
+  recheck: "Recheck requested.",
+};
+const historyNames: Record<string, string> = {
+  seen: "Seen",
+  checked: "Finding saved",
+  recheck: "Rechecked",
+};
+const sensorUnit = (sensor: string) =>
+  sensor.startsWith("P-")
+    ? "bar"
+    : sensor.startsWith("T-")
+      ? "°C"
+      : sensor === "ABER-CKP"
+        ? "%"
+        : sensor === "QGL"
+          ? "m³/s"
+          : "—";
 function emptyWell(well: FleetCatalog["wells"][number]): FleetWell {
   return {
     ...well,
@@ -225,7 +209,7 @@ function WellIcon({ size = 27 }: { size?: number }) {
   );
 }
 
-function FieldMap({
+const FieldMap = memo(function FieldMap({
   wells,
   selected,
   onSelect,
@@ -351,8 +335,8 @@ function FieldMap({
               : "Ready to monitor"}
           </strong>
           {run
-            ? `${run.index} / ${run.total} replay steps · ${run.status}`
-            : "4 independent well recordings"}
+            ? `${run.index} / ${run.total} steps · ${run.status}`
+            : `${wells.length} well recordings`}
         </div>
       </div>
       <div className="fleet-map-compass">
@@ -411,7 +395,7 @@ function FieldMap({
                 <span className="fleet-rank">{rank + 1}</span>
               )}
             <span className="fleet-node-caption">
-              <strong>{wellDescriptions[well.id]?.name || well.name}</strong>
+              <strong>{wellName(well)}</strong>
               <small>
                 {well.source_timestamp
                   ? stateNames[well.status]
@@ -441,9 +425,9 @@ function FieldMap({
       </div>
     </div>
   );
-}
+});
 
-function SensorChart({
+const SensorChart = memo(function SensorChart({
   frames,
   sensor,
   title,
@@ -458,10 +442,14 @@ function SensorChart({
   icon: ReactNode;
   score?: boolean;
 }) {
-  const data = frames.slice(-90).map((frame) => ({
-    minute: Math.round(frame.elapsed_seconds / 60),
-    value: score ? frame.risk_score : sensor ? frame.sensors[sensor] : null,
-  }));
+  const data = useMemo(
+    () =>
+      frames.slice(-90).map((frame) => ({
+        minute: Math.round(frame.elapsed_seconds / 60),
+        value: score ? frame.risk_score : sensor ? frame.sensors[sensor] : null,
+      })),
+    [frames, sensor, score],
+  );
   const value = data.at(-1)?.value;
   const available = data.some((row) => row.value != null);
   return (
@@ -475,9 +463,7 @@ function SensorChart({
         <small>{unit}</small>
       </div>
       <div className="fleet-chart-name">
-        {score
-          ? "Model score · not a probability"
-          : sensor || "Channel unavailable"}
+        {score ? "Uncalibrated score" : sensor || "Unavailable"}
       </div>
       {available ? (
         <div className="fleet-chart-area">
@@ -528,12 +514,162 @@ function SensorChart({
         </div>
       ) : (
         <div className="fleet-chart-empty">
-          {frames.length ? "No usable readings" : "Waiting for readings"}
+          {frames.length ? "No usable readings" : "Waiting"}
         </div>
       )}
     </div>
   );
+});
+
+const classLabels = {
+  normal: "Normal",
+  hydrate: "Hydrate",
+  lookalike: "Look-alike",
+} as const;
+
+function ScoreSpark({
+  frames,
+  threshold,
+}: {
+  frames: FleetFrame[];
+  threshold: number | null;
+}) {
+  const values = frames.slice(-60).map((frame) => frame.risk_score);
+  const step = 120 / Math.max(values.length - 1, 1);
+  const y = (v: number) => 26 - v * 24;
+  const path = values
+    .map((v, i) =>
+      v == null ? null : `${i * step},${y(v).toFixed(1)}`,
+    )
+    .reduce<string[]>((segments, point, i) => {
+      if (point == null) return segments;
+      const startNew = i === 0 || values[i - 1] == null;
+      return startNew
+        ? [...segments, `M${point}`]
+        : [...segments.slice(0, -1), `${segments.at(-1)} L${point}`];
+    }, [])
+    .join(" ");
+  return (
+    <svg
+      className="fleet-model-spark"
+      viewBox="0 0 120 28"
+      preserveAspectRatio="none"
+      aria-hidden="true"
+    >
+      {threshold != null && (
+        <line
+          x1="0"
+          x2="120"
+          y1={y(threshold)}
+          y2={y(threshold)}
+          className="threshold"
+        />
+      )}
+      {path && <path d={path} />}
+    </svg>
+  );
 }
+
+const ModelPredictions = memo(function ModelPredictions({
+  wells,
+  selected,
+  onSelect,
+}: {
+  wells: FleetWell[];
+  selected: string;
+  onSelect: (id: string) => void;
+}) {
+  const model = wells.find((item) => item.prediction)?.prediction;
+  const threshold = model?.threshold ?? null;
+  return (
+    <div className="fleet-card fleet-models">
+      <div className="fleet-card-heading">
+        <div>
+          <h2>Model predictions</h2>
+          <small>
+            LightGBM
+            {threshold != null &&
+              ` · alarm ≥ ${threshold.toFixed(2)} for ${model?.persistence_minutes} min`}
+          </small>
+        </div>
+        {model && <span className="fleet-source">{model.model_id}</span>}
+      </div>
+      <div className="fleet-model-table" role="table" aria-label="Model predictions by well">
+        <div className="fleet-model-row head" role="row">
+          <span role="columnheader">Well</span>
+          {Object.values(classLabels).map((label) => (
+            <span key={label} role="columnheader">
+              {label}
+            </span>
+          ))}
+          <span role="columnheader">Hydrate · 60 min</span>
+          <span role="columnheader">Call</span>
+        </div>
+        {wells.map((item) => {
+          const scores = item.prediction?.scores;
+          const top = scores
+            ? (Object.keys(classLabels) as (keyof typeof classLabels)[])
+                .filter((key) => scores[key] != null)
+                .sort((a, b) => scores[b]! - scores[a]!)[0]
+            : undefined;
+          const streak = item.prediction?.alarm_streak ?? 0;
+          const call = !item.prediction
+            ? { label: "—", tone: "pending" }
+            : item.prediction.alarm_active
+              ? { label: "Hydrate alarm", tone: "attention" }
+              : streak > 0
+                ? {
+                    label: `Rising ${streak}/${item.prediction.persistence_minutes}`,
+                    tone: "watch",
+                  }
+                : top
+                  ? { label: classLabels[top], tone: top === "normal" ? "normal" : "watch" }
+                  : { label: "No data", tone: "unavailable" };
+          return (
+            <button
+              key={item.id}
+              role="row"
+              className={`fleet-model-row ${selected === item.id ? "selected" : ""}`}
+              aria-pressed={selected === item.id}
+              onClick={() => onSelect(item.id)}
+            >
+              <span role="cell" className="fleet-model-well">
+                {wellDescriptions[item.id]?.name.split(" — ")[0] || item.name}
+              </span>
+              {(Object.keys(classLabels) as (keyof typeof classLabels)[]).map(
+                (key) => {
+                  const value = scores?.[key];
+                  return (
+                    <span
+                      role="cell"
+                      key={key}
+                      className={`fleet-model-score ${key} ${top === key ? "top" : ""}`}
+                    >
+                      <strong>{number(value, 2)}</strong>
+                      <i>
+                        <b style={{ width: `${(value ?? 0) * 100}%` }} />
+                        {key === "hydrate" && threshold != null && (
+                          <em style={{ left: `${threshold * 100}%` }} />
+                        )}
+                      </i>
+                    </span>
+                  );
+                },
+              )}
+              <span role="cell">
+                <ScoreSpark frames={item.frames} threshold={threshold} />
+              </span>
+              <span role="cell" className={`fleet-model-call ${call.tone}`}>
+                <i className={`fleet-dot ${call.tone}`} />
+                {call.label}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+});
 
 function IncidentProgress({ events }: { events: FleetTimelineEvent[] }) {
   const milestones = [
@@ -545,7 +681,7 @@ function IncidentProgress({ events }: { events: FleetTimelineEvent[] }) {
   ];
   return (
     <div className="fleet-incident-progress">
-      <span>THIS INCIDENT · SOURCE TIME</span>
+      <span>INCIDENT</span>
       <ol className="fleet-milestones">
         {milestones.map(([kind, label]) => {
           const event = [...events]
@@ -638,7 +774,7 @@ function OperatorCheckTask({
         </button>
       </div>
       <details className="fleet-check-note">
-        <summary>Optional finding note</summary>
+        <summary>Note</summary>
         <input
           aria-label={`Note: ${task.label}`}
           value={checkNote}
@@ -652,7 +788,7 @@ function OperatorCheckTask({
         <p className="fleet-check-saved" role="status">
           <CheckCheck size={11} /> {labels[task.status]} saved
           {task.updated_at
-            ? ` · ${new Date(task.updated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} local time`
+            ? ` · ${new Date(task.updated_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
             : ""}
         </p>
       )}
@@ -672,10 +808,10 @@ export default function FleetDashboard() {
       : null;
     return fallbackWells.some((well) => well.id === saved)
       ? saved!
-      : "WELL-00001";
+      : DEFAULT_WELL;
   });
   const [speed, setSpeed] = useState(12);
-  const [mode, setMode] = useState<FleetMode>("guided");
+  const [useLlm, setUseLlm] = useState(false);
   const [connected, setConnected] = useState(false);
   const [busy, setBusy] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -685,33 +821,34 @@ export default function FleetDashboard() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [dismissedRunError, setDismissedRunError] = useState("");
-  const [sheet, setSheet] = useState<"evidence" | "fault" | null>(null);
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [observing, setObserving] = useState(false);
   const [note, setNote] = useState("");
   const lastEvent = useRef(-1);
   const source = useRef<EventSource | null>(null);
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
+  const adopt = (next: FleetRun) => {
+    lastEvent.current = next.last_event_id;
+    setRun(next);
+    setSpeed(next.speed);
+    setUseLlm(next.use_llm);
+  };
   useEffect(() => {
     let disposed = false;
     let retry: ReturnType<typeof setTimeout> | undefined;
     const load = () => {
-      api<FleetCatalog>("/catalog")
+      api<FleetCatalog>("/fleet/catalog")
         .then((value) => {
           if (disposed) return;
           setCatalog(value);
           setError("");
-          // A reconnecting session owns its speed; a later catalog response must
-          // not overwrite the value already restored from the server.
-          if (!sessionId) {
-            setSpeed(value.default_speed);
-            setMode(value.default_mode || "guided");
-          }
+          // A reconnecting session owns its speed.
+          if (!sessionId) setSpeed(value.default_speed);
         })
         .catch((e) => {
           if (disposed) return;
-          // The API may still be starting; keep trying instead of leaving
-          // Start disabled until a manual reload.
+          // The API may still be starting; keep trying.
           setError(`${e.message} Retrying…`);
           retry = setTimeout(load, 3000);
         });
@@ -728,9 +865,8 @@ export default function FleetDashboard() {
     return () => clearTimeout(timer);
   }, [notice]);
   useEffect(() => {
-    if (sessionId && fallbackWells.some((well) => well.id === selected)) {
+    if (sessionId && fallbackWells.some((well) => well.id === selected))
       localStorage.setItem(`${SELECTED_WELL_KEY}${sessionId}`, selected);
-    }
   }, [sessionId, selected]);
   useEffect(() => {
     setObserving(false);
@@ -739,13 +875,10 @@ export default function FleetDashboard() {
   useEffect(() => {
     if (!sessionId) return;
     let disposed = false;
+    let reopen: ReturnType<typeof setTimeout> | undefined;
     lastEvent.current = -1;
     const apply = (next: FleetRun) => {
-      if (disposed || next.last_event_id < lastEvent.current) return;
-      lastEvent.current = next.last_event_id;
-      setRun(next);
-      setSpeed(next.speed);
-      setMode(next.mode || "continuous");
+      if (!disposed && next.last_event_id >= lastEvent.current) adopt(next);
     };
     const resetMissing = () => {
       if (disposed) return;
@@ -753,67 +886,64 @@ export default function FleetDashboard() {
       localStorage.removeItem(SESSION_KEY);
       localStorage.removeItem(`${SELECTED_WELL_KEY}${sessionId}`);
       setSessionId(null);
-      setSelected("WELL-00001");
+      setSelected(DEFAULT_WELL);
       setRun(null);
       setConnected(false);
-      setNotice("The server restarted. Start a new field replay.");
+      setNotice("Server restarted. Start a new replay.");
     };
-    let reopen: ReturnType<typeof setTimeout> | undefined;
     const open = (after: number) => {
+      if (disposed) return;
+      const stream = new EventSource(
+        `/api/fleet/sessions/${sessionId}/events?after=${after}`,
+      );
+      source.current = stream;
+      stream.onopen = () => {
+        if (!disposed) setConnected(true);
+      };
+      stream.addEventListener("fleet", (message) => {
         if (disposed) return;
-        const stream = new EventSource(
-          `/api/fleet/sessions/${sessionId}/events?after=${after}`,
-        );
-        source.current = stream;
-        stream.onopen = () => {
-          if (!disposed) setConnected(true);
-        };
-        stream.addEventListener("fleet", (message) => {
-          if (disposed) return;
-          try {
-            const event = JSON.parse(
-              (message as MessageEvent).data,
-            ) as FleetEvent;
-            if (event.type === "snapshot") {
-              apply(event.payload);
-              if (finished(event.payload.status)) {
-                stream.close();
-                setConnected(false);
-              }
-            }
-          } catch {
-            setError("A live update could not be read.");
-          }
-        });
-        stream.onerror = () => {
-          if (disposed) return;
-          setConnected(false);
-          // A non-200 response closes an EventSource for good, so reopen it
-          // ourselves; while it is still CONNECTING the browser retries.
-          const closed = stream.readyState === EventSource.CLOSED;
-          const retry = () => {
-            if (disposed || !closed) return;
+        try {
+          const event = JSON.parse(
+            (message as MessageEvent).data,
+          ) as FleetEvent;
+          if (event.type !== "snapshot") return;
+          apply(event.payload);
+          if (finished(event.payload.status)) {
             stream.close();
-            clearTimeout(reopen);
-            reopen = setTimeout(() => open(lastEvent.current), 2000);
-          };
-          api<FleetRun>(`/sessions/${sessionId}`)
-            .then((snapshot) => {
-              apply(snapshot);
-              if (!finished(snapshot.status)) retry();
-            })
-            .catch((e) => {
-              if (e instanceof ApiError && e.status === 404) resetMissing();
-              else retry();
-            });
+            setConnected(false);
+          }
+        } catch {
+          setError("A live update could not be read.");
+        }
+      });
+      stream.onerror = () => {
+        if (disposed) return;
+        setConnected(false);
+        // A non-200 response closes an EventSource for good, so reopen it
+        // ourselves; while it is still CONNECTING the browser retries.
+        const closed = stream.readyState === EventSource.CLOSED;
+        const retry = () => {
+          if (disposed || !closed) return;
+          stream.close();
+          clearTimeout(reopen);
+          reopen = setTimeout(() => open(lastEvent.current), 2000);
         };
+        api<FleetRun>(`/fleet/sessions/${sessionId}`)
+          .then((snapshot) => {
+            apply(snapshot);
+            if (!finished(snapshot.status)) retry();
+          })
+          .catch((e) => {
+            if (e instanceof ApiError && e.status === 404) resetMissing();
+            else retry();
+          });
+      };
     };
-    api<FleetRun>(`/sessions/${sessionId}`)
+    api<FleetRun>(`/fleet/sessions/${sessionId}`)
       .then((snapshot) => {
         if (disposed) return;
         apply(snapshot);
-        if (finished(snapshot.status)) return;
-        open(snapshot.last_event_id);
+        if (!finished(snapshot.status)) open(snapshot.last_event_id);
       })
       .catch((e) => {
         if (disposed) return;
@@ -828,12 +958,8 @@ export default function FleetDashboard() {
     };
   }, [sessionId]);
   const accept = (next: FleetRun) => {
-    if (next.id !== run?.id || next.last_event_id >= lastEvent.current) {
-      lastEvent.current = next.last_event_id;
-      setRun(next);
-      setSpeed(next.speed);
-      setMode(next.mode || "continuous");
-    }
+    if (next.id !== run?.id || next.last_event_id >= lastEvent.current)
+      adopt(next);
   };
   async function command(action: string, extra: object = {}) {
     if (!sessionId || busy) return;
@@ -841,7 +967,7 @@ export default function FleetDashboard() {
     setError("");
     try {
       accept(
-        await api<FleetRun>(`/sessions/${sessionId}/control`, {
+        await api<FleetRun>(`/fleet/sessions/${sessionId}/control`, {
           action,
           ...extra,
         }),
@@ -863,15 +989,17 @@ export default function FleetDashboard() {
       // run on screen that still looks paused.
       if (run && !finished(run.status))
         accept(
-          await api<FleetRun>(`/sessions/${run.id}/control`, {
+          await api<FleetRun>(`/fleet/sessions/${run.id}/control`, {
             action: "cancel",
           }),
         );
       source.current?.close();
-      const next = await api<FleetRun>("/sessions", { speed, mode });
-      lastEvent.current = next.last_event_id;
-      setRun(next);
-      setSelected("WELL-00001");
+      const next = await api<FleetRun>("/fleet/sessions", {
+        speed,
+        use_llm: useLlm,
+      });
+      adopt(next);
+      setSelected(DEFAULT_WELL);
       setSessionId(next.id);
       localStorage.setItem(SESSION_KEY, next.id);
       setNotice("");
@@ -887,52 +1015,35 @@ export default function FleetDashboard() {
     check?: CheckSubmission,
   ) {
     if (!sessionId || busy) return;
-    const targetWell = selected;
-    const incidentId = run?.wells.find((item) => item.id === targetWell)
-      ?.incident?.id;
+    const wellId = selected;
+    const incidentId = run?.wells.find((item) => item.id === wellId)?.incident
+      ?.id;
     if (!incidentId) return;
-    const target = {
-      wellId: targetWell,
-      incidentId,
-      action,
-      checkId: check?.check_id,
-    };
+    const target = { wellId, incidentId, action, checkId: check?.check_id };
     setBusy(true);
     setError("");
-    setActionFeedback({
-      ...target,
-      state: "saving",
-      message:
-        action === "recheck"
-          ? "Requesting an evidence check…"
-          : "Saving your review…",
-    });
+    setActionFeedback({ ...target, state: "saving", message: "Saving…" });
     try {
-      const next = await api<FleetRun>(
-        `/sessions/${sessionId}/incidents/${targetWell}/actions`,
-        {
-          action,
-          incident_id: incidentId,
-          ...(check ||
-            (["observation", "complete"].includes(action) && note.trim()
-              ? { note: note.trim() }
-              : {})),
-        },
+      accept(
+        await api<FleetRun>(
+          `/fleet/sessions/${sessionId}/incidents/${wellId}/actions`,
+          {
+            action,
+            incident_id: incidentId,
+            ...(check ||
+              (["observation", "complete"].includes(action) && note.trim()
+                ? { note: note.trim() }
+                : {})),
+          },
+        ),
       );
-      accept(next);
-      const message =
-        action === "recheck"
-          ? "Evidence check requested. Monitoring status below shows its progress."
-          : action === "check"
-            ? "Finding saved. Sensor status is assessed separately."
-            : action === "observation"
-              ? "Observation saved to this run."
-              : action === "complete"
-                ? "Your review is recorded. Sensor status is assessed separately."
-                : "Acknowledgment saved. The concern remains open.";
-      setActionFeedback({ ...target, state: "saved", message });
+      setActionFeedback({
+        ...target,
+        state: "saved",
+        message: actionMessages[action],
+      });
       if (
-        selectedRef.current === targetWell &&
+        selectedRef.current === wellId &&
         ["observation", "complete", "acknowledge"].includes(action)
       ) {
         setObserving(false);
@@ -942,54 +1053,74 @@ export default function FleetDashboard() {
       setActionFeedback({
         ...target,
         state: "error",
-        message: `${action === "recheck" ? "Could not request the check." : "Could not save your review."} ${(e as Error).message}`,
+        message: `Not saved. ${(e as Error).message}`,
       });
     } finally {
       setBusy(false);
     }
   }
-  const wells = run?.wells.length
-    ? run.wells
-    : catalog?.wells.map(emptyWell) || fallbackWells;
+  const wells = useMemo(
+    () =>
+      run?.wells.length
+        ? run.wells
+        : catalog?.wells.map(emptyWell) || fallbackWells,
+    [run, catalog],
+  );
   const well = wells.find((item) => item.id === selected) || wells[0];
-  const queue = [...wells].sort((a, b) => {
+  const fleet = useMemo(() => {
     const order = run?.priority || [];
-    const ai = order.indexOf(a.id);
-    const bi = order.indexOf(b.id);
-    return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
-  });
+    const rank = (id: string) => {
+      const index = order.indexOf(id);
+      return index < 0 ? 99 : index;
+    };
+    const count = (test: (item: FleetWell) => unknown) =>
+      wells.filter(test).length;
+    return {
+      queue: [...wells].sort((a, b) => rank(a.id) - rank(b.id)),
+      attention: count((w) => w.frames.length && w.status === "attention"),
+      unseen: count(
+        (w) =>
+          w.incident &&
+          !w.incident.acknowledged &&
+          !w.incident.completed &&
+          !w.incident.condition_cleared,
+      ),
+      reliable: count((w) => w.frames.length && w.quality.status === "good"),
+      pending: count((w) => ["queued", "running"].includes(w.investigation)),
+      started: wells.some((w) => w.source_timestamp),
+    };
+  }, [wells, run?.priority]);
+  const [pressure, temperature] = useMemo(() => {
+    const has = (key: string) =>
+      well.frames.some((frame) => frame.sensors[key] != null);
+    return [
+      ["P-TPT", "P-MON-CKP", "P-PDG"].find(has) || null,
+      ["T-TPT", "T-PDG", "T-JUS-CKP"].find(has) || null,
+    ];
+  }, [well.frames]);
   const active = !!run && !finished(run.status);
   const running = run?.status === "running";
   const paused = run?.status === "paused";
   const preparing = run?.status === "preparing";
-  const guided = mode === "guided";
-  const guidePhase = run?.guide?.phase;
-  const checkpoint = run?.guide?.checkpoint;
-  const guideAssessing = guided && running && guidePhase === "assessing";
-  const continueLabel =
-    guidePhase === "overview" ? "Next important moment" : "Continue demo";
+  const investigating =
+    active && connected && well.investigation === "running";
+  const incident = well.incident;
   const currentFeedback =
     actionFeedback?.wellId === well.id &&
-    actionFeedback.incidentId === well.incident?.id
+    actionFeedback.incidentId === incident?.id
       ? actionFeedback
       : null;
   const savingAction =
     currentFeedback?.state === "saving" ? currentFeedback.action : null;
-  const reviewSaved =
-    !!well.incident &&
-    (well.incident.acknowledged ||
-      well.incident.completed ||
-      well.incident.condition_cleared);
-  const reviewTitle = well.incident?.condition_cleared
-    ? "Readings recovered"
-    : well.incident?.completed
-      ? "Your review is recorded"
-      : "Acknowledgment saved";
-  const reviewDetail = well.incident?.condition_cleared
-    ? "The previous incident remains in the evidence record."
-    : well.incident?.completed
-      ? "The concern stays open until the sensor evidence recovers."
-      : "The concern is still open. After checking the evidence, add what you found.";
+  const reviewState = !incident
+    ? null
+    : incident.condition_cleared
+      ? "Recovered"
+      : incident.completed
+        ? "Review recorded"
+        : incident.acknowledged
+          ? "Acknowledged"
+          : null;
   const nextMinutes =
     well.next_check && well.source_timestamp
       ? Math.max(
@@ -999,144 +1130,53 @@ export default function FleetDashboard() {
               60_000,
           ),
         )
-      : null;
-  const monitoring = !run
-    ? {
-        title: "Ready to monitor",
-        detail: "Start the replay to read and assess all four wells.",
-      }
+      : NaN;
+  const [monitorTitle, monitorDetail] = !run
+    ? ["Ready", ""]
     : finished(run.status)
-      ? {
-          title:
-            run.status === "failed" ? "Replay interrupted" : "Replay ended",
-          detail:
-            "No new readings or checks are running. Start a new replay to continue.",
-        }
+      ? [run.status === "failed" ? "Replay interrupted" : "Replay ended", ""]
       : preparing
-        ? {
-            title: "Loading the recordings",
-            detail: "Monitoring starts when the four feeds are ready.",
-          }
+        ? ["Loading recordings", ""]
         : !connected
-          ? {
-              title: "Reconnecting to the replay",
-              detail:
-                "Showing the last received state. Monitoring status will update after reconnection.",
-            }
+          ? ["Reconnecting…", ""]
           : well.investigation === "running"
-            ? {
-                title: "Reviewing current evidence",
-                detail: paused
-                  ? `This check is finishing. New readings and checks wait for ${guided ? "Continue demo" : "Resume"}.`
-                  : well.activity,
-              }
-            : paused
-              ? {
-                  title: guided
-                    ? "Historical readings are paused"
-                    : "Automatic checks are paused",
-                  detail:
-                    well.investigation === "queued"
-                      ? guided
-                        ? "A review is queued. Continue demo checks the current evidence before moving on."
-                        : "A review is queued. Resume the replay to run it and read new data."
-                      : guided
-                        ? "Take time to read and record your findings. Continue demo advances to the next important moment."
-                        : "Resume the replay to receive new readings and continue checking this well.",
-                }
-              : well.investigation === "queued"
-                ? {
-                    title: guideAssessing
-                      ? "Current-reading check queued"
-                      : "Assessment queued",
-                    detail: guideAssessing
-                      ? "Historical readings are held while the current evidence is checked. The demo pauses when the review finishes."
-                      : "Sensor monitoring continues while this well waits for review.",
-                  }
-                : {
-                    title: guideAssessing
-                      ? "Current reading held for review"
-                      : "Monitoring each new reading",
-                    detail: guideAssessing
-                      ? "The field review is finishing before the demo pauses. No new readings are advancing."
-                      : nextMinutes != null && Number.isFinite(nextMinutes)
-                        ? `Next automatic review in ${nextMinutes || 1} data ${nextMinutes === 1 || nextMinutes === 0 ? "minute" : "minutes"}.`
-                        : "Changes in the sensor evidence trigger another review.",
-                  };
-  const liveConfigured =
+            ? ["Reviewing evidence", paused ? "" : well.activity]
+            : well.investigation === "queued"
+              ? [paused ? "Paused" : "Review queued", paused ? "Review queued." : ""]
+              : paused
+                ? ["Paused", ""]
+                : [
+                    "Monitoring",
+                    Number.isFinite(nextMinutes)
+                      ? `Next review in ${nextMinutes || 1} min`
+                      : "",
+                  ];
+  const llmConfigured =
     run?.llm_configured ?? catalog?.llm_configured ?? false;
-  const llmDeferred = run?.llm_deferred ?? catalog?.llm_deferred ?? false;
+  const provider = (run?.llm_providers ?? catalog?.llm_providers ?? [])[0];
   const readyModel = run?.model_ready ?? catalog?.model_ready ?? false;
-  const agentSource = well.assessment?.source || run?.agent_mode || "rules";
-  const attention = wells.filter(
-    (item) => item.frames.length && item.status === "attention",
-  ).length;
-  const unseen = wells.filter(
-    (item) =>
-      item.incident &&
-      !item.incident.acknowledged &&
-      !item.incident.completed &&
-      !item.incident.condition_cleared,
-  ).length;
+  const agentSource: AgentSource =
+    well.assessment?.source || run?.agent_mode || (useLlm ? "live" : "rules");
+  const sourceLabel =
+    agentSource === "live"
+      ? `LLM${provider ? ` · ${provider}` : ""}`
+      : agentSource === "recorded"
+        ? "Recorded"
+        : "Model + rules";
   const runError =
     run?.error && run.error !== dismissedRunError ? run.error : "";
-  const reliable = wells.filter(
-    (item) => item.frames.length && item.quality.status === "good",
-  ).length;
-  const pending = wells.filter((item) =>
-    ["queued", "running"].includes(item.investigation),
-  ).length;
-  const hasReading = (key: string) =>
-    well.frames.some((frame) => frame.sensors[key] != null);
-  const pressure = ["P-TPT", "P-MON-CKP", "P-PDG"].find(hasReading) || null;
-  const temperature = ["T-TPT", "T-PDG", "T-JUS-CKP"].find(hasReading) || null;
   const headerStatus = preparing
-    ? "Loading sensor data..."
+    ? "Loading…"
     : paused
-      ? guided
-        ? "Ready to monitor"
-        : "Replay paused"
+      ? "Paused"
       : running
-        ? guided
-          ? guideAssessing
-            ? "Analyzing well data..."
-            : "Scanning for anomalies..."
-          : "Monitoring 4 wells in real-time"
+        ? `Monitoring ${wells.length} wells`
         : run?.status === "failed"
           ? "Replay interrupted"
           : finished(run?.status)
-            ? "Replay complete — see Results"
-            : "Ready to monitor";
-  const checkpointWell = wells.find((item) => item.id === checkpoint?.well_id);
-  const visibleCheckpoint = ["checkpoint", "ended"].includes(guidePhase || "")
-    ? checkpoint
-    : null;
-  const guideTitle = preparing
-    ? "Loading sensor recordings..."
-    : !run || guidePhase === "overview"
-      ? "4 offshore wells. Which one needs help?"
-      : running
-        ? guideAssessing
-          ? "Analyzing sensor data..."
-          : "Scanning for anomalies..."
-        : visibleCheckpoint?.title ||
-          (finished(run.status)
             ? "Replay complete"
-            : "Detection paused — review the evidence");
-  const guideSummary = preparing
-    ? "Loading real Petrobras 3W sensor data from four independent well recordings."
-    : !run
-      ? "Click \"Start walkthrough\" to watch Frostline monitor all four wells simultaneously and flag the one forming a hydrate."
-      : guidePhase === "overview"
-        ? "You're seeing historical sensor data. Click \"Next important moment\" to watch the system detect the first anomaly."
-        : running
-          ? guideAssessing
-            ? "The ML model and physics checks are evaluating these readings. The system will pause when it has a finding."
-            : "Processing sensor readings minute by minute. The system will pause at the next significant detection."
-          : visibleCheckpoint?.summary ||
-            (finished(run.status)
-              ? "All sensor data has been processed. Check the Results tab to see how each system performed."
-              : "The system detected something. Review the evidence below, then click \"Continue demo\" to keep going.");
+            : "Ready";
+  const wellStatus = well.source_timestamp ? well.status : "pending";
   return (
     <section
       className="fleet-dashboard"
@@ -1144,57 +1184,48 @@ export default function FleetDashboard() {
     >
       <header className="fleet-header">
         <div>
-          <div className="fleet-eyebrow">FROSTLINE · AUTONOMOUS HYDRATE DETECTION</div>
+          <div className="fleet-eyebrow">FROSTLINE · HYDRATE DETECTION</div>
           <h1>{headerStatus}</h1>
-          <p className="fleet-subtitle">
-            Monitoring 4 wells simultaneously — ML + physics flag risks, agent investigates evidence.
-          </p>
         </div>
         <div className="fleet-controls">
           <div
             className="fleet-mode-picker"
             role="group"
-            aria-label="Replay mode"
+            aria-label="Assessment engine"
+            title={llmConfigured ? undefined : "No provider key"}
           >
-            {(["guided", "continuous"] as FleetMode[]).map((value) => (
+            {[false, true].map((value) => (
               <button
-                key={value}
-                aria-pressed={mode === value}
-                disabled={busy || preparing}
+                key={String(value)}
+                aria-pressed={useLlm === value}
+                disabled={busy || preparing || (value && !llmConfigured)}
+                title={value && !llmConfigured ? "No provider key" : undefined}
                 onClick={() => {
-                  if (mode === value) return;
-                  if (active) void command("mode", { mode: value });
-                  else setMode(value);
+                  if (useLlm === value) return;
+                  if (active) void command("llm", { use_llm: value });
+                  else setUseLlm(value);
                 }}
               >
-                {value === "guided" ? "Guided demo" : "Continuous replay"}
+                {value ? "LLM" : "Rules"}
               </button>
             ))}
           </div>
-          {!guided && (
-            <select
-              aria-label="Replay pace"
-              value={speed}
-              disabled={busy || preparing}
-              onChange={(event) => {
-                const value = Number(event.target.value);
-                if (active) void command("speed", { speed: value });
-                else setSpeed(value);
-              }}
-            >
-              {(catalog?.speeds || [12, 30, 60, 120]).map((value) => (
-                <option key={value} value={value}>
-                  {value === 12
-                    ? "Comfortable · 1 reading / 5s"
-                    : value === 30
-                      ? "Faster · 1 data min / 2s"
-                      : value === 60
-                        ? "Fast · 1 data min / 1s"
-                        : "Fastest · 1 data min / 0.5s"}
-                </option>
-              ))}
-            </select>
-          )}
+          <select
+            aria-label="Replay speed"
+            value={speed}
+            disabled={busy || preparing}
+            onChange={(event) => {
+              const value = Number(event.target.value);
+              if (active) void command("speed", { speed: value });
+              else setSpeed(value);
+            }}
+          >
+            {(catalog?.speeds || [12, 30, 60, 120]).map((value) => (
+              <option key={value} value={value}>
+                {value}×
+              </option>
+            ))}
+          </select>
           {!active ? (
             <button
               className="fleet-button primary"
@@ -1206,17 +1237,13 @@ export default function FleetDashboard() {
               ) : (
                 <Play size={15} />
               )}
-              {guided ? "Start walkthrough" : "Start field replay"}
+              Start
             </button>
           ) : (
             <button
               className="fleet-button primary"
               disabled={busy || preparing}
-              onClick={() =>
-                void command(
-                  running ? "pause" : guided ? "next_moment" : "resume",
-                )
-              }
+              onClick={() => void command(running ? "pause" : "resume")}
             >
               {preparing ? (
                 <LoaderCircle size={15} className="spin" />
@@ -1224,39 +1251,29 @@ export default function FleetDashboard() {
                 <Pause size={15} />
               ) : (
                 <Play size={15} />
-              )}{" "}
-              {preparing
-                ? "Preparing…"
-                : running
-                  ? guided
-                    ? "Stop scanning"
-                    : "Pause"
-                  : guided
-                    ? continueLabel
-                    : "Resume"}
+              )}
+              {preparing ? "Preparing…" : running ? "Pause" : "Resume"}
             </button>
           )}
           <button
             className="fleet-button"
-            title="Read one more historical minute, then pause"
+            title="Advance one minute"
             disabled={busy || !paused}
             onClick={() => void command("step")}
           >
             <SkipForward size={15} />
-            Read 1 minute
+            +1 min
           </button>
           {run && (
             <button
               className="fleet-button icon"
-              aria-label="Restart field replay"
-              title="Restart field replay"
+              aria-label="Restart replay"
+              title="Restart replay"
               disabled={busy || preparing}
               onClick={() => {
                 if (
                   finished(run.status) ||
-                  window.confirm(
-                    "Restart the field replay? The current run will be discarded.",
-                  )
+                  window.confirm("Restart? The current run will be discarded.")
                 )
                   void start();
               }}
@@ -1290,88 +1307,26 @@ export default function FleetDashboard() {
           </button>
         </div>
       )}
-      {guided && (
-        <section
-          className={`fleet-guide-banner ${running ? "scanning" : ""}`}
-          aria-label="Guided replay status"
-          aria-live="polite"
-        >
-          <div className="fleet-guide-icon">
-            {preparing || running ? (
-              <LoaderCircle size={20} className="spin" />
-            ) : finished(run?.status) ? (
-              <CheckCheck size={20} />
-            ) : (
-              <Pause size={20} />
-            )}
-          </div>
-          <div className="fleet-guide-copy">
-            <div className="fleet-eyebrow">
-              {!run
-                ? "GUIDED HISTORICAL REPLAY"
-                : preparing
-                  ? "PREPARING HISTORICAL REPLAY"
-                  : running
-                    ? guideAssessing
-                      ? "HISTORICAL REPLAY · CHECKING EVIDENCE"
-                      : "HISTORICAL REPLAY · ADVANCING"
-                    : finished(run.status)
-                      ? "HISTORICAL REPLAY ENDED"
-                      : "HISTORICAL REPLAY PAUSED"}
-            </div>
-            <h2>{guideTitle}</h2>
-            <p>{guideSummary}</p>
-            {paused && pending > 0 && (
-              <small>
-                A review is queued. Continue demo checks the current evidence
-                first.
-              </small>
-            )}
-            {visibleCheckpoint?.source_timestamp && (
-              <small>
-                {checkpointWell?.name ? `${checkpointWell.name} · ` : ""}
-                {time(visibleCheckpoint.source_timestamp)} source time
-              </small>
-            )}
-          </div>
-          {visibleCheckpoint?.well_id && checkpointWell && (
-            <button
-              className="fleet-button"
-              disabled={selected === visibleCheckpoint.well_id}
-              onClick={() => setSelected(visibleCheckpoint.well_id!)}
-            >
-              {selected === visibleCheckpoint.well_id
-                ? `Viewing ${checkpointWell.name}`
-                : `View ${checkpointWell.name}`}
-              <ArrowRight size={13} />
-            </button>
-          )}
-        </section>
-      )}
       <div className="fleet-kpis">
         <Kpi
-          value={String(attention)}
-          label="Wells needing review"
+          value={String(fleet.attention)}
+          label="Need review"
           icon={<CircleAlert size={18} />}
-          warning={attention > 0}
+          warning={fleet.attention > 0}
         />
         <Kpi
-          value={String(unseen)}
-          label="Awaiting acknowledgment"
+          value={String(fleet.unseen)}
+          label="Unacknowledged"
           icon={<MessageSquare size={18} />}
         />
         <Kpi
-          value={
-            wells.some((item) => item.source_timestamp)
-              ? `${reliable} / ${wells.length}`
-              : "—"
-          }
+          value={fleet.started ? `${fleet.reliable} / ${wells.length}` : "—"}
           label="Reliable feeds"
           icon={<Radio size={18} />}
         />
         <Kpi
-          value={String(pending)}
-          label="Queued / active checks"
+          value={String(fleet.pending)}
+          label="Active checks"
           icon={<Activity size={18} />}
         />
       </div>
@@ -1383,27 +1338,21 @@ export default function FleetDashboard() {
             onSelect={setSelected}
             run={run}
           />
-          <p className="fleet-map-caption">
-            Illustrative layout · independent Petrobras 3W recordings aligned to
-            replay time
-          </p>
-          <div className="fleet-card">
+          <div className="fleet-card fleet-trends">
             <div className="fleet-card-heading">
               <div>
-                <h2>
-                  {wellDescriptions[well.id]?.name || well.name}
-                </h2>
+                <h2>{wellName(well)}</h2>
                 <small>
                   {well.source_timestamp
                     ? `${wellDescriptions[well.id]?.scenario || "Recording replay"} · ${time(well.source_timestamp)}`
                     : well.frames.length
-                      ? "Prior history · replay readings have not started"
-                      : "Select a well on the map to follow its readings."}
+                      ? "Warm-up history"
+                      : "Select a well"}
                 </small>
               </div>
               <button
                 className="fleet-text-button"
-                onClick={() => setSheet("evidence")}
+                onClick={() => setEvidenceOpen(true)}
               >
                 Evidence
                 <ArrowRight size={13} />
@@ -1433,23 +1382,12 @@ export default function FleetDashboard() {
                 score
               />
             </div>
-            <div className="fleet-trend-foot">
-              <Clock3 size={11} />
-              Negative minutes = prior history · gaps stay visible
-            </div>
           </div>
-          {run?.fault && (
-            <div className="fleet-notice">
-              <Zap size={15} />
-              <span>
-                Demo fault on{" "}
-                {wells.find((item) => item.id === run.fault?.well_id)?.name ||
-                  run.fault.well_id}{" "}
-                · {run.fault.remaining} inputs remaining. Excluded from accuracy
-                claims.
-              </span>
-            </div>
-          )}
+          <ModelPredictions
+            wells={wells}
+            selected={well.id}
+            onSelect={setSelected}
+          />
         </div>
         <aside
           className="fleet-rail"
@@ -1458,15 +1396,12 @@ export default function FleetDashboard() {
           <div className="fleet-card">
             <div className="fleet-card-heading">
               <div>
-                <div className="fleet-eyebrow" style={{ fontSize: 9 }}>
-                  WHERE TO LOOK FIRST
-                </div>
-                <h2 style={{ marginTop: 6 }}>Priority list</h2>
+                <h2>Priority</h2>
               </div>
               <span className="fleet-source">{wells.length} wells</span>
             </div>
             <ol className="fleet-queue">
-              {queue.map((item, index) => (
+              {fleet.queue.map((item, index) => (
                 <li key={item.id}>
                   <button
                     className={`fleet-queue-item ${well.id === item.id ? "selected" : ""}`}
@@ -1484,7 +1419,7 @@ export default function FleetDashboard() {
                       <small>
                         {item.source_timestamp
                           ? stateNames[item.status]
-                          : "Awaiting first check"}
+                          : "Waiting"}
                         {item.incident?.acknowledged &&
                         !item.incident.completed &&
                         !item.incident.condition_cleared
@@ -1510,120 +1445,80 @@ export default function FleetDashboard() {
             <div className="fleet-assessment">
               <div className="fleet-eyebrow">
                 <Sparkles size={12} />
-                {wellDescriptions[well.id]?.name || well.name} · EVIDENCE REVIEW
+                {wellName(well)}
               </div>
-              <span
-                className={`fleet-status ${well.source_timestamp ? well.status : "pending"}`}
-              >
-                <i
-                  className={`fleet-dot ${well.source_timestamp ? well.status : "pending"}`}
-                />
-                {well.source_timestamp
-                  ? stateNames[well.status]
-                  : "Awaiting first check"}
+              <span className={`fleet-status ${wellStatus}`}>
+                <i className={`fleet-dot ${wellStatus}`} />
+                {well.source_timestamp ? stateNames[well.status] : "Waiting"}
               </span>
               <h3>
                 {well.assessment?.summary ||
-                  (active && connected && well.investigation === "running"
-                    ? "Investigating the latest readings…"
-                    : "Waiting for the first readings.")}
+                  (investigating ? "Investigating…" : "Waiting for readings")}
               </h3>
               {well.assessment?.evidence.length ? (
                 <ul className="fleet-evidence-list">
-                  {well.assessment.evidence
-                    .slice(0, 2)
-                    .map((evidence, index) => (
-                      <li key={index}>
-                        <ArrowDownRight size={13} />
-                        {evidence}
-                      </li>
-                    ))}
+                  {well.assessment.evidence.slice(0, 2).map((item, index) => (
+                    <li key={index}>
+                      <ArrowDownRight size={13} />
+                      {item}
+                    </li>
+                  ))}
                 </ul>
-              ) : (
-                <p>
-                  {well.frames.length
-                    ? well.activity || "Checking the available sensor evidence."
-                    : "Start the replay. The agent will check each well and surface what needs your attention."}
-                </p>
-              )}
+              ) : well.frames.length && well.activity ? (
+                <p>{well.activity}</p>
+              ) : null}
               {!!well.timeline?.length && (
                 <IncidentProgress events={well.timeline} />
               )}
               <div className="fleet-next-step">
-                <span>NEXT OPERATOR STEP</span>
-                <p>
-                  {well.assessment?.next_step ||
-                    (guided && guidePhase === "overview"
-                      ? "Choose Next important moment when you are ready to begin."
-                      : "No action yet. Monitoring starts with the replay.")}
-                </p>
-                {well.incident && (
+                <span>NEXT STEP</span>
+                <p>{well.assessment?.next_step || "None"}</p>
+                {incident && (
                   <div className="fleet-actions" aria-busy={!!savingAction}>
                     <button
                       className="fleet-button primary"
-                      disabled={
-                        busy ||
-                        !well.incident ||
-                        well.incident.acknowledged ||
-                        well.incident.completed ||
-                        well.incident.condition_cleared
-                      }
+                      disabled={busy || !!reviewState}
                       aria-describedby={`review-help-${well.id}`}
                       onClick={() => void incidentAction("acknowledge")}
                     >
                       {savingAction === "acknowledge" ? (
                         <LoaderCircle size={13} className="spin" />
-                      ) : well.incident?.acknowledged ||
-                        well.incident?.completed ? (
+                      ) : reviewState ? (
                         <CheckCheck size={13} />
                       ) : (
                         <Check size={13} />
-                      )}{" "}
+                      )}
                       {savingAction === "acknowledge"
-                        ? "Saving acknowledgment…"
-                        : well.incident?.condition_cleared
-                          ? "Recovered"
-                          : well.incident?.completed
-                            ? "Review recorded"
-                            : well.incident?.acknowledged
-                              ? "Acknowledged"
-                              : currentFeedback?.state === "error" &&
-                                  currentFeedback.action === "acknowledge"
-                                ? "Try acknowledgment again"
-                                : "Acknowledge alert"}
+                        ? "Saving…"
+                        : reviewState ||
+                          (currentFeedback?.state === "error" &&
+                          currentFeedback.action === "acknowledge"
+                            ? "Retry"
+                            : "Acknowledge")}
                     </button>
                     <button
-                      className={`fleet-button ${reviewSaved ? "primary" : ""}`}
-                      disabled={busy || !well.incident}
+                      className={`fleet-button ${reviewState ? "primary" : ""}`}
+                      disabled={busy}
                       onClick={() => setObserving(!observing)}
                     >
                       <MessageSquare size={12} />
-                      Add observation
+                      Note
                     </button>
                   </div>
                 )}
-                {well.incident && (
+                {incident && reviewState && !savingAction && (
                   <div
                     id={`review-help-${well.id}`}
-                    className={`fleet-review-feedback ${reviewSaved ? "saved" : ""}`}
+                    className="fleet-review-feedback saved"
                     role="status"
                     aria-live="polite"
                     aria-atomic="true"
                   >
-                    {savingAction === "acknowledge" ? (
-                      <span>Recording that you have seen this alert…</span>
-                    ) : reviewSaved ? (
-                      <>
-                        <strong>
-                          <CheckCheck size={13} /> {reviewTitle}
-                        </strong>
-                        <span>{reviewDetail}</span>
-                      </>
-                    ) : (
-                      <span>
-                        Acknowledge means “I’ve seen this alert.” The sensor
-                        checks run independently.
-                      </span>
+                    <strong>
+                      <CheckCheck size={13} /> {reviewState}
+                    </strong>
+                    {!incident.condition_cleared && (
+                      <span>Open until readings recover.</span>
                     )}
                   </div>
                 )}
@@ -1640,15 +1535,13 @@ export default function FleetDashboard() {
                   )}
                 {observing && (
                   <div className="fleet-observation">
-                    <label htmlFor="fleet-observation">
-                      What did you observe?
-                    </label>
+                    <label htmlFor="fleet-observation">Observation</label>
                     <textarea
                       id="fleet-observation"
                       value={note}
                       onChange={(event) => setNote(event.target.value)}
                       maxLength={500}
-                      placeholder="e.g. Telemetry checked; awaiting engineer review."
+                      placeholder="What did you see?"
                     />
                     <div className="fleet-actions">
                       <button
@@ -1659,33 +1552,27 @@ export default function FleetDashboard() {
                         {savingAction === "observation" && (
                           <LoaderCircle size={12} className="spin" />
                         )}
-                        {savingAction === "observation"
-                          ? "Saving observation…"
-                          : "Record observation"}
+                        {savingAction === "observation" ? "Saving…" : "Save note"}
                       </button>
                       <button
                         className="fleet-button"
-                        disabled={busy || !!well.incident?.completed}
+                        disabled={busy || !!incident?.completed}
                         onClick={() => void incidentAction("complete")}
                       >
                         {savingAction === "complete" && (
                           <LoaderCircle size={12} className="spin" />
                         )}
                         {savingAction === "complete"
-                          ? "Saving review…"
+                          ? "Saving…"
                           : "Complete review"}
                       </button>
                     </div>
-                    <p className="fleet-review-help">
-                      Completing your review records your check. The alert
-                      follows the sensor evidence.
-                    </p>
                   </div>
                 )}
-                {!!well.incident && !!well.assessment?.checks?.length && (
+                {!!incident && !!well.assessment?.checks?.length && (
                   <details
                     className="fleet-checklist"
-                    key={`${well.id}-${well.incident.id}`}
+                    key={`${well.id}-${incident.id}`}
                   >
                     <summary>
                       Operator checks{" "}
@@ -1695,14 +1582,10 @@ export default function FleetDashboard() {
                             (task) => task.status !== "pending",
                           ).length
                         }{" "}
-                        / {well.assessment.checks.length} saved
+                        / {well.assessment.checks.length}
                       </span>
                     </summary>
                     <div className="fleet-checklist-body">
-                      <p className="fleet-review-help">
-                        Record what you verified. Findings inform the review;
-                        measured conditions determine the alert.
-                      </p>
                       {well.assessment.checks.map((task) => (
                         <OperatorCheckTask
                           key={`${task.id}-${task.definition}-${task.updated_at || "pending"}`}
@@ -1722,48 +1605,36 @@ export default function FleetDashboard() {
                 )}
                 <div
                   className={`fleet-follow-up ${paused ? "paused" : ""}`}
-                  aria-label="Automatic monitoring status"
+                  aria-label="Monitoring status"
                 >
                   <strong>
-                    {active && connected && well.investigation === "running" ? (
+                    {investigating ? (
                       <LoaderCircle size={14} className="spin" />
                     ) : paused ? (
                       <Pause size={14} />
                     ) : (
                       <Clock3 size={14} />
                     )}
-                    {monitoring.title}
+                    {monitorTitle}
                   </strong>
-                  <p>{monitoring.detail}</p>
+                  {monitorDetail && <p>{monitorDetail}</p>}
                   {well.followup?.last_checked_at && (
                     <div className="fleet-followup-change">
                       <p>{well.followup.change_summary}</p>
-                      <small>
-                        Last checked · {time(well.followup.last_checked_at)}{" "}
-                        source time
-                      </small>
+                      <small>{time(well.followup.last_checked_at)}</small>
                     </div>
                   )}
-                  {running &&
-                    connected &&
-                    well.investigation !== "running" &&
-                    well.investigation !== "queued" && (
-                      <small>Each replay step advances one data minute.</small>
-                    )}
                   <div className="fleet-followup-actions">
                     {paused && (
                       <button
                         className="fleet-button"
                         disabled={busy}
-                        onClick={() =>
-                          void command(guided ? "next_moment" : "resume")
-                        }
+                        onClick={() => void command("resume")}
                       >
-                        <Play size={12} />{" "}
-                        {guided ? continueLabel : "Resume automatic checks"}
+                        <Play size={12} /> Resume
                       </button>
                     )}
-                    {well.incident && (
+                    {incident && (
                       <button
                         className="fleet-button"
                         disabled={
@@ -1775,10 +1646,10 @@ export default function FleetDashboard() {
                         }
                         title={
                           !active
-                            ? "Start a new replay to run another evidence check."
+                            ? "Start a new replay first"
                             : paused
-                              ? `Queues an evidence check for when you ${guided ? "continue the demo" : "resume"}.`
-                              : "Request a new review of the available evidence."
+                              ? "Runs on resume"
+                              : "Review the evidence again"
                         }
                         onClick={() => void incidentAction("recheck")}
                       >
@@ -1791,7 +1662,7 @@ export default function FleetDashboard() {
                           ? "Requesting…"
                           : paused
                             ? "Queue recheck"
-                            : "Recheck now"}
+                            : "Recheck"}
                       </button>
                     )}
                   </div>
@@ -1808,11 +1679,11 @@ export default function FleetDashboard() {
                   <span
                     className={`fleet-dot ${agentSource === "live" ? "normal" : "unavailable"}`}
                   />
-                  {sourceNames[agentSource]}
+                  {sourceLabel}
                 </span>
                 <button
                   className="fleet-text-button"
-                  onClick={() => setSheet("evidence")}
+                  onClick={() => setEvidenceOpen(true)}
                 >
                   Why?
                   <ArrowRight size={12} />
@@ -1820,37 +1691,20 @@ export default function FleetDashboard() {
               </div>
             </div>
           </div>
-          {llmDeferred ? (
-            <div className="fleet-mode-notice">
+          <div className="fleet-mode-notice">
+            {readyModel ? (
               <ShieldCheck size={13} />
-              <span>
-                Automatic evidence checks are active. LLM investigations are
-                deferred.
-              </span>
-            </div>
-          ) : !liveConfigured ? (
-            <div className="fleet-mode-notice">
-              <Unplug size={13} />
-              <span>
-                LLM key not configured. Sensor checks and rule-based assessments
-                remain available.
-              </span>
-            </div>
-          ) : !readyModel ? (
-            <div className="fleet-mode-notice">
+            ) : (
               <LoaderCircle size={13} />
-              <span>
-                {run?.readiness_message ||
+            )}
+            <span>
+              {readyModel
+                ? "Advisory only"
+                : run?.readiness_message ||
                   catalog?.readiness_message ||
-                  "Preparing the trained model."}
-              </span>
-            </div>
-          ) : (
-            <div className="fleet-mode-notice">
-              <ShieldCheck size={13} />
-              <span>Operator advice. Plant controls remain with the crew.</span>
-            </div>
-          )}
+                  "Loading model…"}
+            </span>
+          </div>
         </aside>
       </div>
       <div className="fleet-footnote">
@@ -1861,334 +1715,242 @@ export default function FleetDashboard() {
           {preparing
             ? run?.readiness_message
             : run
-              ? `${paused ? "Historical replay paused" : finished(run.status) ? "Historical replay finished" : connected ? (guideAssessing ? "Checking current evidence" : "Replay feed connected") : "Connecting to replay"} · ${llmDeferred ? "Model + rules · LLM deferred" : `${run.requests_used} / ${run.request_budget} LLM requests`}`
-              : "Historical replay · assessments computed during the run"}
+              ? `${paused ? "Paused" : finished(run.status) ? "Finished" : connected ? "Connected" : "Connecting…"}${useLlm ? ` · ${run.requests_used}/${run.request_budget} LLM calls` : ""}`
+              : "Historical 3W replay"}
         </span>
-        <div className="fleet-bottom-actions">
-          <button
+        {run && (
+          <a
             className="fleet-text-button"
-            disabled={!active || preparing}
-            onClick={() => setSheet("fault")}
+            href={`/api/fleet/sessions/${run.id}/export`}
+            download
           >
-            <Zap size={12} />
-            Try a telemetry fault
-          </button>
-          {run && (
-            <a
-              className="fleet-text-button"
-              href={`/api/fleet/sessions/${run.id}/export`}
-              download
-            >
-              <Download size={12} />
-              Export run
-            </a>
-          )}
-        </div>
+            <Download size={12} />
+            Export run
+          </a>
+        )}
       </div>
-      {sheet === "evidence" && (
-        <Sheet title={`${well.name} · Evidence`} onClose={() => setSheet(null)}>
-          <section>
-            <h3>Current assessment</h3>
-            <p>
-              {well.assessment?.summary ||
-                "The agent has not assessed this well yet."}
-            </p>
-            {well.assessment?.uncertainty && (
-              <p style={{ marginTop: 8 }}>{well.assessment.uncertainty}</p>
-            )}
-            <ul className="fleet-evidence-list">
-              {well.assessment?.evidence.map((evidence, index) => (
-                <li key={index}>
-                  <ArrowDownRight size={13} />
-                  {evidence}
-                </li>
-              ))}
-            </ul>
-            {(well.assessment?.category ||
-              !!well.assessment?.alternatives?.length) && (
-              <details className="fleet-sensor-details">
-                <summary>Assessment context</summary>
-                {well.assessment.category && (
-                  <p>
-                    Working category:{" "}
-                    {well.assessment.category.replaceAll("_", " ")}. This is a
-                    review hypothesis, not a confirmed diagnosis.
-                  </p>
-                )}
-                {!!well.assessment.alternatives?.length && (
-                  <ul className="fleet-evidence-list">
-                    {well.assessment.alternatives.map((alternative, index) => (
-                      <li key={index}>{alternative}</li>
-                    ))}
-                  </ul>
-                )}
-              </details>
-            )}
-          </section>
-          {well.followup?.after && (
-            <section>
-              <h3>Latest evidence check</h3>
-              <p>{well.followup.change_summary}</p>
-              <p>
-                Trigger: {well.followup.trigger || "Scheduled evidence review"}
-              </p>
-              <div className="fleet-evidence-change">
-                {[
-                  { label: "Before", snapshot: well.followup.before },
-                  { label: "After", snapshot: well.followup.after },
-                ].map(({ label, snapshot }) => (
-                  <div key={label}>
-                    <span>{label}</span>
-                    {snapshot ? (
-                      <>
-                        <time dateTime={snapshot.at}>
-                          {snapshot.at} · source time
-                        </time>
-                        <strong>{stateNames[snapshot.status]}</strong>
-                        <p>{snapshot.summary}</p>
-                        <ul>
-                          {snapshot.evidence.map((item, index) => (
-                            <li key={index}>{item}</li>
-                          ))}
-                        </ul>
-                      </>
-                    ) : (
-                      <p>No earlier assessment in this run.</p>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-          {!!well.timeline?.length && (
-            <section>
-              <details className="fleet-sensor-details">
-                <summary>
-                  Incident history · {well.timeline.length} recorded events
-                </summary>
-                <p>
-                  Times show when actions or checks occurred in the source
-                  replay. An acknowledgment does not trigger a sensor check.
-                </p>
-                <ol className="fleet-history-list">
-                  {well.timeline.map((event) => (
-                    <li key={event.id}>
-                      <strong>
-                        {event.kind === "seen"
-                          ? "Seen by operator"
-                          : event.kind === "checked"
-                            ? "Operator finding saved"
-                            : event.kind === "recheck"
-                              ? "Evidence rechecked"
-                              : event.kind.replaceAll("_", " ")}
-                      </strong>
-                      <time dateTime={event.at}>{event.at} · source time</time>
-                      <p>{event.summary}</p>
-                    </li>
-                  ))}
-                </ol>
-              </details>
-            </section>
-          )}
-          <section>
-            <h3>Data & provenance</h3>
-            <dl>
-              <dt>Source</dt>
-              <dd>{well.source_file || "Loading catalog"}</dd>
-              <dt>Source timestamp</dt>
-              <dd>{well.source_timestamp || "No input yet"}</dd>
-              <dt>Replay time</dt>
-              <dd>{elapsed(run?.elapsed_seconds || 0)} elapsed</dd>
-              <dt>Sensor health</dt>
-              <dd>{well.quality.summary}</dd>
-              <dt>Assessment source</dt>
-              <dd>{sourceNames[agentSource]}</dd>
-              <dt>Last assessed</dt>
-              <dd>{well.last_assessed || "Not assessed"}</dd>
-              <dt>Next check</dt>
-              <dd>{well.next_check || "Not scheduled"}</dd>
-            </dl>
-          </section>
-          <section>
-            <details className="fleet-sensor-details">
-              <summary>All sensor readings</summary>
-              {well.frames.length ? (
-                <>
-                  <p>Latest source reading · {well.frames.at(-1)?.t}</p>
-                  <table className="fleet-sensor-table">
-                    <thead>
-                      <tr>
-                        <th>Sensor</th>
-                        <th>Reading</th>
-                        <th>Unit</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {Object.entries(well.frames.at(-1)!.sensors).map(
-                        ([sensor, value]) => {
-                          const unit = sensor.startsWith("P-")
-                            ? "bar"
-                            : sensor.startsWith("T-")
-                              ? "°C"
-                              : sensor === "ABER-CKP"
-                                ? "%"
-                                : sensor === "QGL"
-                                  ? "m³/s"
-                                  : "—";
-                          return (
-                            <tr key={sensor}>
-                              <td>{sensor}</td>
-                              <td>
-                                {value == null || !Number.isFinite(value)
-                                  ? "Unavailable"
-                                  : value.toLocaleString("en", {
-                                      maximumSignificantDigits: 6,
-                                    })}
-                              </td>
-                              <td>{unit}</td>
-                            </tr>
-                          );
-                        },
-                      )}
-                    </tbody>
-                  </table>
-                  <p>QGL is gas-lift injection, not oil production.</p>
-                </>
-              ) : (
-                <p>No sensor readings have arrived yet.</p>
-              )}
-            </details>
-          </section>
-          <section>
-            <h3>Investigation steps</h3>
-            {well.assessment?.tools.length ? (
-              <ol className="fleet-trace">
-                {well.assessment.tools.map((tool, index) => (
-                  <li key={index}>
-                    <strong>
-                      {tool.status === "running" ? (
-                        <LoaderCircle size={12} className="spin" />
-                      ) : tool.status === "failed" ? (
-                        <CircleAlert size={12} />
-                      ) : (
-                        <Check size={12} />
-                      )}{" "}
-                      {tool.name.replaceAll("_", " ")}
-                    </strong>
-                    {tool.summary && <p>{tool.summary}</p>}
-                    {tool.sources?.length ? (
-                      <small>Sources: {tool.sources.join(" · ")}</small>
-                    ) : null}
-                  </li>
-                ))}
-              </ol>
-            ) : (
-              <p>
-                {well.activity ||
-                  "Investigation steps appear after the next assessment."}
-              </p>
-            )}
-            {well.assessment?.playbook_refs?.length ? (
-              <p className="fleet-playbook-refs">
-                <small>Playbook: {well.assessment.playbook_refs.join(" · ")}</small>
-              </p>
-            ) : null}
-          </section>
-          {well.incident && (
-            <section>
-              <h3>Operator record</h3>
-              <dl>
-                <dt>Incident</dt>
-                <dd>{well.incident.id}</dd>
-                <dt>Seen by operator</dt>
-                <dd>
-                  {well.incident.acknowledged
-                    ? "Acknowledged"
-                    : "Awaiting acknowledgment"}
-                </dd>
-                <dt>Review</dt>
-                <dd>
-                  {well.incident.condition_cleared
-                    ? "Recovered"
-                    : well.incident.completed
-                      ? "Complete"
-                      : "Open"}
-                </dd>
-                {well.incident.note && (
-                  <>
-                    <dt>Observation</dt>
-                    <dd>{well.incident.note}</dd>
-                  </>
-                )}
-              </dl>
-            </section>
-          )}
-          <section>
-            <p>
-              These recordings have independent original timelines. Map
-              locations and their shared replay clock are illustrative.
-              Acknowledgment records attention; it does not clear the underlying
-              condition.
-            </p>
-          </section>
-        </Sheet>
-      )}
-      {sheet === "fault" && (
-        <Sheet
-          title={`Test telemetry · ${well.name}`}
-          onClose={() => setSheet(null)}
-        >
-          <p>
-            Change the next incoming readings for this well. The agent will
-            investigate the changed evidence during this run.
-          </p>
-          <div className="fleet-fault-list">
-            <button
-              className="fleet-button"
-              disabled={busy}
-              onClick={() => {
-                void command("inject", {
-                  well_id: well.id,
-                  fault: "pressure_offline",
-                });
-                setSheet(null);
-              }}
-            >
-              <Unplug size={19} />
-              <span>
-                Pressure sensor offline
-                <small>
-                  Remove pressure readings and test the telemetry response.
-                </small>
-              </span>
-            </button>
-            <button
-              className="fleet-button"
-              disabled={busy || !run?.fault}
-              onClick={() => {
-                void command("inject", {
-                  well_id: run?.fault?.well_id ?? well.id,
-                  fault: "restore",
-                });
-                setSheet(null);
-              }}
-            >
-              <Waves size={19} />
-              <span>
-                Restore original readings
-                <small>
-                  Stop the injected fault and continue the historical feed.
-                </small>
-              </span>
-            </button>
-          </div>
-          <p>
-            Injected faults are demo interventions and excluded from accuracy
-            claims.
-          </p>
-        </Sheet>
+      {evidenceOpen && (
+        <EvidenceSheet
+          well={well}
+          elapsedSeconds={run?.elapsed_seconds || 0}
+          sourceLabel={sourceLabel}
+          onClose={() => setEvidenceOpen(false)}
+        />
       )}
     </section>
+  );
+}
+
+function EvidenceSheet({
+  well,
+  elapsedSeconds,
+  sourceLabel,
+  onClose,
+}: {
+  well: FleetWell;
+  elapsedSeconds: number;
+  sourceLabel: string;
+  onClose: () => void;
+}) {
+  const { assessment, followup, incident, timeline } = well;
+  const latest = well.frames.at(-1);
+  return (
+    <Sheet title={`${well.name} · Evidence`} onClose={onClose}>
+      <section>
+        <h3>Assessment</h3>
+        <p>{assessment?.summary || "Not assessed yet."}</p>
+        {assessment?.uncertainty && (
+          <p style={{ marginTop: 8 }}>{assessment.uncertainty}</p>
+        )}
+        <ul className="fleet-evidence-list">
+          {assessment?.evidence.map((item, index) => (
+            <li key={index}>
+              <ArrowDownRight size={13} />
+              {item}
+            </li>
+          ))}
+        </ul>
+        {(assessment?.category || !!assessment?.alternatives?.length) && (
+          <details className="fleet-sensor-details">
+            <summary>Context</summary>
+            {assessment.category && (
+              <p>Hypothesis: {assessment.category.replaceAll("_", " ")}</p>
+            )}
+            {!!assessment.alternatives?.length && (
+              <ul className="fleet-evidence-list">
+                {assessment.alternatives.map((alternative, index) => (
+                  <li key={index}>{alternative}</li>
+                ))}
+              </ul>
+            )}
+          </details>
+        )}
+      </section>
+      {followup?.after && (
+        <section>
+          <h3>Latest check</h3>
+          <p>{followup.change_summary}</p>
+          <p>Trigger: {followup.trigger || "Scheduled"}</p>
+          <div className="fleet-evidence-change">
+            {(
+              [
+                ["Before", followup.before],
+                ["After", followup.after],
+              ] as const
+            ).map(([label, snapshot]) => (
+              <div key={label}>
+                <span>{label}</span>
+                {snapshot ? (
+                  <>
+                    <time dateTime={snapshot.at}>{snapshot.at}</time>
+                    <strong>{stateNames[snapshot.status]}</strong>
+                    <p>{snapshot.summary}</p>
+                    <ul>
+                      {snapshot.evidence.map((item, index) => (
+                        <li key={index}>{item}</li>
+                      ))}
+                    </ul>
+                  </>
+                ) : (
+                  <p>None earlier.</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+      {!!timeline?.length && (
+        <section>
+          <details className="fleet-sensor-details">
+            <summary>Incident history · {timeline.length}</summary>
+            <ol className="fleet-history-list">
+              {timeline.map((event) => (
+                <li key={event.id}>
+                  <strong>
+                    {historyNames[event.kind] || event.kind.replaceAll("_", " ")}
+                  </strong>
+                  <time dateTime={event.at}>{event.at}</time>
+                  <p>{event.summary}</p>
+                </li>
+              ))}
+            </ol>
+          </details>
+        </section>
+      )}
+      <section>
+        <h3>Provenance</h3>
+        <dl>
+          <dt>Source</dt>
+          <dd>{well.source_file || "—"}</dd>
+          <dt>Source time</dt>
+          <dd>{well.source_timestamp || "—"}</dd>
+          <dt>Replay time</dt>
+          <dd>{elapsed(elapsedSeconds)}</dd>
+          <dt>Sensor health</dt>
+          <dd>{well.quality.summary}</dd>
+          <dt>Assessed by</dt>
+          <dd>{sourceLabel}</dd>
+          <dt>Last assessed</dt>
+          <dd>{well.last_assessed || "—"}</dd>
+          <dt>Next check</dt>
+          <dd>{well.next_check || "—"}</dd>
+        </dl>
+      </section>
+      <section>
+        <details className="fleet-sensor-details">
+          <summary>Sensor readings</summary>
+          {latest ? (
+            <>
+              <p>{latest.t}</p>
+              <table className="fleet-sensor-table">
+                <thead>
+                  <tr>
+                    <th>Sensor</th>
+                    <th>Reading</th>
+                    <th>Unit</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {Object.entries(latest.sensors).map(([sensor, value]) => (
+                    <tr key={sensor}>
+                      <td>{sensor}</td>
+                      <td>
+                        {value == null || !Number.isFinite(value)
+                          ? "—"
+                          : value.toLocaleString("en", {
+                              maximumSignificantDigits: 6,
+                            })}
+                      </td>
+                      <td>{sensorUnit(sensor)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <p>QGL = gas-lift injection.</p>
+            </>
+          ) : (
+            <p>No readings yet.</p>
+          )}
+        </details>
+      </section>
+      <section>
+        <h3>Steps</h3>
+        {assessment?.tools.length ? (
+          <ol className="fleet-trace">
+            {assessment.tools.map((tool, index) => (
+              <li key={index}>
+                <strong>
+                  {tool.status === "running" ? (
+                    <LoaderCircle size={12} className="spin" />
+                  ) : tool.status === "failed" ? (
+                    <CircleAlert size={12} />
+                  ) : (
+                    <Check size={12} />
+                  )}{" "}
+                  {tool.name.replaceAll("_", " ")}
+                </strong>
+                {tool.summary && <p>{tool.summary}</p>}
+                {!!tool.sources?.length && (
+                  <small>Sources: {tool.sources.join(" · ")}</small>
+                )}
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p>{well.activity || "None yet."}</p>
+        )}
+        {!!assessment?.playbook_refs?.length && (
+          <p className="fleet-playbook-refs">
+            <small>Playbook: {assessment.playbook_refs.join(" · ")}</small>
+          </p>
+        )}
+      </section>
+      {incident && (
+        <section>
+          <h3>Operator record</h3>
+          <dl>
+            <dt>Incident</dt>
+            <dd>{incident.id}</dd>
+            <dt>Seen</dt>
+            <dd>{incident.acknowledged ? "Acknowledged" : "Not yet"}</dd>
+            <dt>Review</dt>
+            <dd>
+              {incident.condition_cleared
+                ? "Recovered"
+                : incident.completed
+                  ? "Complete"
+                  : "Open"}
+            </dd>
+            {incident.note && (
+              <>
+                <dt>Observation</dt>
+                <dd>{incident.note}</dd>
+              </>
+            )}
+          </dl>
+        </section>
+      )}
+    </Sheet>
   );
 }
 
@@ -2211,552 +1973,5 @@ function Kpi({
         <span>{label}</span>
       </div>
     </div>
-  );
-}
-
-type FleetMetrics = {
-  events_detected: number;
-  hydrate_events: number;
-  false_alarm_episodes: number;
-  false_alarm_minutes: number;
-  false_alarm_minutes_per_normal_day: number;
-  missed_hydrate_minutes: number;
-  early_events: number;
-  lookalikes_flagged: number;
-  lookalike_recordings: number;
-  illustrative_cost: number;
-  mean_detection_delay_minutes: number | null;
-};
-type FleetReport = {
-  model_id: string;
-  training_recordings: number;
-  evaluation_recordings: number;
-  training_wells: string[];
-  excluded_wells: string[];
-  protocol: string;
-  selected_policy: {
-    activation_threshold: number;
-    persistence_minutes: number;
-    recovery_minutes: number;
-    recovery_threshold: number;
-  };
-  validation_baseline: FleetMetrics;
-  validation_selected: FleetMetrics;
-  candidates: {
-    policy: { activation_threshold: number; persistence_minutes: number };
-    metrics: FleetMetrics;
-    accepted: boolean;
-    reason: string;
-  }[];
-  stages: { id: string; name: string; metrics: FleetMetrics }[];
-  limits: string[];
-  recordings: { well_id: string; file: string; hydrate_event: boolean }[];
-  model_comparison?: {
-    id: string;
-    qualifies: boolean;
-    selected: boolean;
-    validation: {
-      events_detected: number;
-      hydrate_events: number;
-      false_alarm_minutes: number;
-      classification_recall: { lookalike: number };
-    };
-  }[];
-  selected_candidate?: {
-    id: string;
-    feature_family: string;
-    weighting: string;
-  };
-};
-
-export function FleetResults() {
-  const [report, setReport] = useState<FleetReport | null>(null);
-  const [error, setError] = useState("");
-  const [expanded, setExpanded] = useState(false);
-  useEffect(() => {
-    api<FleetReport>("/results")
-      .then((value) => {
-        if (!value.stages)
-          throw new Error("The fleet evaluation has not run yet.");
-        setReport(value);
-      })
-      .catch((e) => setError(e.message));
-  }, []);
-  if (error)
-    return (
-      <section className="fleet-results fleet-card">
-        <div className="fleet-assessment">
-          <h2>Real-well fleet results</h2>
-          <p>{error}</p>
-        </div>
-      </section>
-    );
-  if (!report)
-    return (
-      <section className="fleet-results fleet-card">
-        <div className="fleet-assessment">
-          <p>Loading the four-well evaluation…</p>
-        </div>
-      </section>
-    );
-  const accepted = report.candidates.filter(
-    (candidate) => candidate.accepted,
-  ).length;
-  const first = report.stages[0]?.metrics;
-  const quality = report.stages.find(
-    (stage) => stage.id === "quality",
-  )?.metrics;
-  const selectedMetrics = report.stages.find(
-    (stage) => stage.id === "selected",
-  )?.metrics;
-  const hydrateWells = new Set(
-    report.recordings
-      .filter((record) => record.hydrate_event)
-      .map((record) => record.well_id),
-  ).size;
-  return (
-    <section
-      className="fleet-results fleet-card"
-      aria-label="Measured four-well fleet results"
-    >
-      <div className="fleet-card-heading">
-        <div>
-          <div className="fleet-eyebrow">AUTONOMOUS IMPROVEMENT · REAL DATA</div>
-          <h2>Every hydrate event detected. Fewer false alarms.</h2>
-          <small>
-            Trained on 20 recordings from 17 wells. Tested on 11 held-out recordings from 4 wells.
-            The model never saw these wells during training.
-          </small>
-        </div>
-        <span className="fleet-source">Measured results</span>
-      </div>
-      <div className="fleet-evaluation-split">
-        <div>
-          <span>01 · LEARN</span>
-          <strong>{report.training_recordings} recordings</strong>
-          <small>{report.training_wells.length} wells to train the model</small>
-        </div>
-        <ArrowRight size={17} />
-        <div>
-          <span>02 · CHOOSE</span>
-          <strong>{report.candidates.length} alarm policies per model</strong>
-          <small>
-            {report.model_comparison?.length
-              ? `${report.model_comparison.length} classifiers · `
-              : ""}
-            Validation folds keep wells separate
-          </small>
-        </div>
-        <ArrowRight size={17} />
-        <div>
-          <span>03 · EVALUATE</span>
-          <strong>{report.evaluation_recordings} recordings</strong>
-          <small>
-            {report.excluded_wells.length} wells held out of training
-          </small>
-        </div>
-      </div>
-      <div className="fleet-result-table-wrap">
-        <table className="fleet-result-table">
-          <thead>
-            <tr>
-              <th>Stage</th>
-              <th>Events caught</th>
-              <th>False alert episodes</th>
-              <th>False alert minutes</th>
-              <th>Missed hydrate minutes</th>
-              <th>False min / normal day</th>
-              <th>Mean detection delay</th>
-            </tr>
-          </thead>
-          <tbody>
-            {report.stages.map((stage, index) => (
-              <tr key={stage.id}>
-                <td>
-                  <span>{String(index + 1).padStart(2, "0")}</span>
-                  {stage.name}
-                </td>
-                <td>
-                  {stage.metrics.events_detected} /{" "}
-                  {stage.metrics.hydrate_events}
-                </td>
-                <td>{stage.metrics.false_alarm_episodes}</td>
-                <td>{stage.metrics.false_alarm_minutes.toLocaleString()}</td>
-                <td>{stage.metrics.missed_hydrate_minutes.toLocaleString()}</td>
-                <td>
-                  {number(stage.metrics.false_alarm_minutes_per_normal_day, 1)}
-                </td>
-                <td>
-                  {number(stage.metrics.mean_detection_delay_minutes, 2)} min
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <div className="fleet-result-summary">
-        <div>
-          <h3>
-            {accepted
-              ? `${accepted} alarm-policy update${accepted === 1 ? "" : "s"}`
-              : "The search kept the existing policy"}
-          </h3>
-          <p>
-            {accepted
-              ? "Only validation improvements that preserved detected events could be accepted."
-              : `None of the ${report.candidates.length} alarm policies improved the validation objective while preserving detected events.`}{" "}
-            Active threshold{" "}
-            {number(report.selected_policy.activation_threshold, 2)} ·{" "}
-            {report.selected_policy.persistence_minutes}-minute persistence ·{" "}
-            {report.selected_policy.recovery_minutes}-minute recovery.
-          </p>
-          <p style={{ marginTop: 8 }}>
-            Validation: {report.validation_baseline.events_detected} →{" "}
-            {report.validation_selected.events_detected} events caught;{" "}
-            {report.validation_baseline.false_alarm_minutes.toLocaleString()} →{" "}
-            {report.validation_selected.false_alarm_minutes.toLocaleString()}{" "}
-            false alert minutes.
-          </p>
-        </div>
-        {first && quality && (
-          <div>
-            <h3>A measured tradeoff</h3>
-            <p>
-              Sensor-quality handling changed false alert episodes from{" "}
-              {first.false_alarm_episodes} to {quality.false_alarm_episodes},
-              while missed hydrate minutes changed from{" "}
-              {first.missed_hydrate_minutes.toLocaleString()} to{" "}
-              {quality.missed_hydrate_minutes.toLocaleString()}. The overall
-              result is not a uniform improvement.
-            </p>
-            {selectedMetrics && (
-              <p style={{ marginTop: 8 }}>
-                The selected policy reduced episodes to{" "}
-                {selectedMetrics.false_alarm_episodes}, with{" "}
-                {selectedMetrics.missed_hydrate_minutes.toLocaleString()} missed
-                minutes and{" "}
-                {number(selectedMetrics.mean_detection_delay_minutes, 2)}{" "}
-                minutes mean detection delay.
-              </p>
-            )}
-          </div>
-        )}
-      </div>
-      <div className="fleet-result-limit">
-        <CircleAlert size={14} />
-        <p>
-          {first?.hydrate_events || 0} hydrate events came from{" "}
-          {hydrateWells || 1} held-out hydrate well{hydrateWells > 1 ? "s" : ""}
-          . This previously explored subset is internal evaluation; it does not
-          establish field reliability. These results are separate from the
-          synthetic seed experiment below.
-        </p>
-      </div>
-      <div className="fleet-result-details">
-        {!!report.model_comparison?.length && (
-          <details className="fleet-model-comparison">
-            <summary>
-              Classifier comparison ·{" "}
-              {report.selected_candidate?.id === "base_class"
-                ? "current classifier retained"
-                : "candidate selected"}
-            </summary>
-            <div className="fleet-result-expanded">
-              <p>
-                Grouped development-validation results, selected before held-out
-                prediction. An accepted alarm-policy update and a better
-                classifier are separate decisions.
-              </p>
-              <div className="fleet-result-table-wrap">
-                <table className="fleet-result-table">
-                  <thead>
-                    <tr>
-                      <th>Classifier</th>
-                      <th>Events caught</th>
-                      <th>False alert minutes</th>
-                      <th>Lookalike recall</th>
-                      <th>Decision</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {report.model_comparison.map((candidate) => (
-                      <tr key={candidate.id}>
-                        <td>
-                          {{
-                            base_class: "Current classifier",
-                            base_record: "Equal recording weights",
-                            relative_record: "Relative changes",
-                            hybrid_record: "Combined features",
-                          }[candidate.id] || candidate.id}
-                        </td>
-                        <td>
-                          {candidate.validation.events_detected} /{" "}
-                          {candidate.validation.hydrate_events}
-                        </td>
-                        <td>
-                          {candidate.validation.false_alarm_minutes.toLocaleString()}
-                        </td>
-                        <td>
-                          {number(
-                            candidate.validation.classification_recall
-                              .lookalike * 100,
-                            1,
-                          )}
-                          %
-                        </td>
-                        <td>
-                          {candidate.selected
-                            ? candidate.id === "base_class"
-                              ? "Retain incumbent"
-                              : "Selected"
-                            : candidate.qualifies
-                              ? "Qualifies"
-                              : "Rejected"}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <p>
-                {report.selected_candidate?.id === "base_class"
-                  ? "No challenger passed the validation gates. The existing classifier remains active."
-                  : "The selected classifier passed the validation gates. Held-out results above remain separate."}
-              </p>
-            </div>
-          </details>
-        )}
-        <button
-          className="fleet-text-button"
-          onClick={() => setExpanded(!expanded)}
-          aria-expanded={expanded}
-        >
-          {expanded
-            ? "Hide evaluation details"
-            : "Show candidates, protocol and limits"}
-          <ChevronRight size={13} />
-        </button>
-        {expanded && (
-          <div className="fleet-result-expanded">
-            <p>{report.protocol}</p>
-            <div className="fleet-result-table-wrap">
-              <table className="fleet-result-table">
-                <thead>
-                  <tr>
-                    <th>Candidate</th>
-                    <th>Threshold</th>
-                    <th>Persistence</th>
-                    <th>Events caught</th>
-                    <th>False alert minutes</th>
-                    <th>Decision</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {report.candidates.map((candidate, index) => (
-                    <tr key={index}>
-                      <td>{index + 1}</td>
-                      <td>
-                        {number(candidate.policy.activation_threshold, 2)}
-                      </td>
-                      <td>{candidate.policy.persistence_minutes} min</td>
-                      <td>
-                        {candidate.metrics.events_detected} /{" "}
-                        {candidate.metrics.hydrate_events}
-                      </td>
-                      <td>
-                        {candidate.metrics.false_alarm_minutes.toLocaleString()}
-                      </td>
-                      <td>
-                        {candidate.accepted ? "Accept" : "Retain incumbent"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <ul>
-              {report.limits.map((limit) => (
-                <li key={limit}>{limit}</li>
-              ))}
-            </ul>
-            <small>Frozen model: {report.model_id}</small>
-          </div>
-        )}
-      </div>
-      <WorkflowResults />
-    </section>
-  );
-}
-
-function WorkflowResults() {
-  const [report, setReport] = useState<FleetWorkflowReport | null>(null);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    api<FleetWorkflowReport>("/workflow-results")
-      .then(setReport)
-      .catch((e) => setError(e.message));
-  }, []);
-  const metrics = report?.metrics;
-  return (
-    <section
-      className="fleet-workflow-results"
-      aria-label="Operator workflow evaluation"
-    >
-      <div className="fleet-card-heading">
-        <div>
-          <div className="fleet-eyebrow">
-            OPERATOR WORKFLOW · SEPARATE EVALUATION
-          </div>
-          <h2>Does the follow-up work?</h2>
-          <small>
-            Replay behavior and scripted checks. Separate from detection-model
-            accuracy.
-          </small>
-        </div>
-        <span className="fleet-source">No LLM calls</span>
-      </div>
-      {error ? (
-        <p className="fleet-workflow-empty">
-          Workflow evaluation is unavailable: {error}
-        </p>
-      ) : !report ? (
-        <p className="fleet-workflow-empty">
-          Loading the saved workflow evaluation…
-        </p>
-      ) : report.status !== "complete" || !metrics ? (
-        <p className="fleet-workflow-empty">
-          No completed workflow evaluation has been saved yet.
-        </p>
-      ) : (
-        <>
-          <div className="fleet-workflow-metrics">
-            <div>
-              <span>Normal minutes flagged for attention</span>
-              <strong>
-                {metrics.model_only_false_attention_minutes.toLocaleString()}{" "}
-                <ArrowRight size={13} />{" "}
-                {metrics.workflow_false_attention_minutes.toLocaleString()}
-              </strong>
-              <small>Model alarm → complete workflow</small>
-            </div>
-            <div>
-              <span>Normal minutes on watch</span>
-              <strong>
-                {metrics.workflow_false_watch_minutes.toLocaleString()}
-              </strong>
-              <small>Additional operator review burden</small>
-            </div>
-            <div>
-              <span>Minutes with unavailable evidence</span>
-              <strong>
-                {metrics.workflow_unavailable_minutes.toLocaleString()}
-              </strong>
-              <small>All replay minutes; never treated as normal</small>
-            </div>
-          </div>
-          <p className="fleet-workflow-scope">
-            {metrics.recordings} real recordings ·{" "}
-            {metrics.observed_minutes.toLocaleString()} observed minutes ·{" "}
-            {metrics.normal_minutes.toLocaleString()} labelled normal minutes. A
-            flagged recording means watch or attention overlapped its event,
-            including flags already present before the event. This does not
-            establish early warning or a correct diagnosis.
-          </p>
-          <div className="fleet-workflow-disclosures">
-            <details>
-              <summary>Event coverage and limitations</summary>
-              <div className="fleet-workflow-detail">
-                <table className="fleet-sensor-table">
-                  <thead>
-                    <tr>
-                      <th>Labelled recording</th>
-                      <th>Flagged by workflow</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td>Hydrate</td>
-                      <td>
-                        {metrics.hydrate_events_detected} /{" "}
-                        {metrics.hydrate_events_total}
-                      </td>
-                    </tr>
-                    <tr>
-                      <td>Restriction</td>
-                      <td>
-                        {metrics.restriction_events_detected} /{" "}
-                        {metrics.restriction_events_total}
-                      </td>
-                    </tr>
-                    <tr>
-                      <td>Scaling</td>
-                      <td>
-                        {metrics.scaling_events_detected} /{" "}
-                        {metrics.scaling_events_total}
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-                <ul>
-                  {report.limits?.map((limit) => (
-                    <li key={limit}>{limit}</li>
-                  ))}
-                </ul>
-                <small>
-                  Model {report.model_id} · generated {report.generated_at}
-                </small>
-              </div>
-            </details>
-            <details>
-              <summary>
-                Scripted workflow checks{" "}
-                <span>
-                  {report.summary?.passed ?? 0} / {report.summary?.total ?? 0}{" "}
-                  passed
-                </span>
-              </summary>
-              <div className="fleet-workflow-detail">
-                <p>
-                  Synthetic scenarios test the software lifecycle. Passing these
-                  checks is not proof of field diagnosis or operator benefit.
-                </p>
-                <ol className="fleet-workflow-scenarios">
-                  {report.scenarios?.map((scenario) => (
-                    <li key={scenario.id}>
-                      <div>
-                        <strong>{scenario.name}</strong>
-                        <span
-                          className={
-                            scenario.status === "pass" ? "pass" : "fail"
-                          }
-                        >
-                          {scenario.status === "pass" ? (
-                            <Check size={12} />
-                          ) : (
-                            <CircleAlert size={12} />
-                          )}{" "}
-                          {scenario.status === "pass" ? "Pass" : "Fail"}
-                        </span>
-                      </div>
-                      <p>{scenario.evidence}</p>
-                      {scenario.metrics && (
-                        <small>
-                          {Object.entries(scenario.metrics)
-                            .map(
-                              ([key, value]) =>
-                                `${key.replaceAll("_", " ")}: ${value}`,
-                            )
-                            .join(" · ")}
-                        </small>
-                      )}
-                    </li>
-                  ))}
-                </ol>
-              </div>
-            </details>
-          </div>
-        </>
-      )}
-    </section>
   );
 }

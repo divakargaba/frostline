@@ -1,254 +1,152 @@
 # Fleet API Contract
 
-Fleet replay system for monitoring multiple wells on a shared clock.
+One runtime pipeline: four held-out 3W wells replayed together on a shared clock, scored every
+source minute by the fleet LightGBM model (`models/fleet_model.pkl`), escalated by the alarm
+policy (`src/fleet_policy.py`), and reviewed by a bounded investigation queue. Reviews use
+rule-based evidence checks by default; LLM investigations are an optional per-run toggle.
+
+Implementation: `backend/fleet.py` (router), `backend/main.py` (app, health, scores, static).
 
 ## Endpoints
 
-### `POST /fleet/sessions`
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/health` | `{status, fleet: capabilities, llm_usage}` |
+| GET | `/api/scores` | Offline baseline ladder from `results/summary.csv` |
+| GET | `/api/fleet/catalog` | Wells, speeds, model and LLM readiness |
+| GET | `/api/fleet/results` | Offline fleet model report (`{"status":"not_run"}` if absent) |
+| GET | `/api/fleet/workflow-results` | Offline workflow evaluation report |
+| POST | `/api/fleet/sessions` | Start a run → snapshot (201) |
+| GET | `/api/fleet/sessions/{id}` | Current snapshot |
+| POST | `/api/fleet/sessions/{id}/control` | Replay control → snapshot |
+| POST | `/api/fleet/sessions/{id}/incidents/{well}/actions` | Operator action → snapshot |
+| GET | `/api/fleet/sessions/{id}/events` | SSE stream of snapshots |
+| GET | `/api/fleet/sessions/{id}/export` | JSON journal download (run, audit, events) |
+| GET | `/dashboard`, `/assets/*` | Built frontend (`frontend/dist`), when present |
 
-Create a new fleet replay session. Loads wells from `data/demo/fleet.json`.
-
-**Request:**
-```json
-{
-  "speed": 60,
-  "agent": true,
-  "mode": "live",
-  "record": false
-}
-```
-
-- `speed`: ticks per second (1-6000)
-- `agent`: enable watcher + agent investigations
-- `mode`: `"live"` (real LLM), `"cached"` (replay recording), `"cache_only"` (agent uses cache/fallback only)
-- `record`: save all events to `data/demo/fleet_<timestamp>.jsonl`
-
-**Response:**
-```json
-{
-  "session_id": "a1b2c3d4",
-  "n_wells": 4,
-  "max_minutes": 180,
-  "mode": "live"
-}
-```
-
-### `POST /fleet/sessions/{id}/pause`
-
-Pause the replay clock.
-
-**Response:** `{"session_id": "...", "paused": true}`
-
-### `POST /fleet/sessions/{id}/resume`
-
-Resume the replay clock.
-
-**Response:** `{"session_id": "...", "paused": false}`
-
-### `GET /fleet/sessions/{id}/stream`
-
-SSE event stream. Multiple subscribers supported. Late joiners get a catch-up `fleet_status` event.
-
-### `POST /fleet/sessions/{id}/incidents/{incident_id}/ack`
-
-Acknowledge an incident. Monitoring continues; escalation still possible.
-
-**Response:**
-```json
-{"incident_id": "WELL-00019_34", "acknowledged": true}
-```
-
----
-
-## SSE Event Types
-
-### `fleet_tick`
-
-Emitted for each well at each clock tick.
+### `GET /api/fleet/catalog`
 
 ```json
 {
-  "session_id": "a1b2c3d4",
-  "well_id": "WELL-00019",
-  "display_id": "Delta-19",
-  "replay_minute": 34,
-  "original_t": "2012-06-02T20:59:00",
-  "sensors": {
-    "P_TPT_bar": 279.6,
-    "T_TPT_C": 82.3,
-    "P_PDG_bar": 281.2,
-    "T_PDG_C": 83.1,
-    "P_MON_CKP_bar": 278.4,
-    "QGL": 9.95
-  },
-  "margin_C": 2.1,
-  "p_hydrate": 0.72,
-  "p_lookalike": 0.15,
-  "p_normal": 0.13,
-  "quality": {"P-PDG": "stuck"}
+  "wells": [{"id": "WELL-00001", "name": "Well 1", "source_file": ""}],
+  "default_speed": 12,
+  "speeds": [12, 30, 60, 120],
+  "model_ready": true,
+  "llm_configured": true,
+  "llm_providers": ["gemini", "groq"],
+  "readiness_message": "Model ready. ..."
 }
 ```
 
-`quality` field only present when sensors have issues. Possible values: `"nonfinite"`, `"extreme"`, `"below_absolute_zero"`, `"choke_out_of_range"`, `"stuck"`.
+- `llm_configured` is true when any provider key is set (`GEMINI_API_KEY`, `GROQ_API_KEY`,
+  `OPENROUTER_API_KEY`); `llm_providers` lists provider names in pool order, never keys.
+- `LLM_MODE=mock` reports no providers.
 
-### `fleet_phase_marker`
+### `POST /api/fleet/sessions`
 
-Emitted when a well transitions between phases.
+```json
+{"speed": 12, "use_llm": false}
+```
+
+- `speed`: one of `12 | 30 | 60 | 120` source minutes per real minute (default 12; 422 otherwise).
+- `use_llm` (default false): route investigations through the LLM investigator
+  (`src/fleet_llm.investigate`) over the provider pool (Gemini → Groq → OpenRouter) with the BM25
+  playbook. If no provider is configured the run still starts on rules, the snapshot reports
+  `use_llm: false`, and `readiness_message` explains why.
+- 503 when the fleet model is not trained; 409 when four runs are already active.
+- The run loads the recordings (`status: "preparing"`) and then plays continuously (`"running"`).
+
+### Snapshot (`FleetRun`)
+
+Returned by every session endpoint and carried as the SSE `payload`.
 
 ```json
 {
-  "session_id": "a1b2c3d4",
-  "well_id": "WELL-00019",
-  "display_id": "Delta-19",
-  "t": "2012-06-02T20:59:00",
-  "phase": "forming"
+  "id": "…", "status": "preparing|running|paused|completed|cancelled|failed",
+  "speed": 12, "elapsed_seconds": 2400, "index": 40, "total": 180,
+  "agent_mode": "rules|live",
+  "use_llm": false, "llm_configured": false, "llm_providers": [],
+  "model_ready": true, "readiness_message": "…",
+  "wells": [Well, Well, Well, Well],
+  "priority": ["WELL-00019", "WELL-00002", "WELL-00006", "WELL-00001"],
+  "last_event_id": 57, "requests_used": 0, "request_budget": 18, "error": null
 }
 ```
 
-### `fleet_watch_trigger`
+- `agent_mode` becomes `"live"` only after an LLM investigation has passed validation.
+- `requests_used` / `request_budget`: provider requests spent by this run (`FLEET_LLM_MAX`, default 18).
+  Requests are also capped at 10/minute across runs, two concurrent investigations across runs, and a
+  provider circuit breaker pauses LLM reviews after an account rate limit (5 min) or a nonzero cost.
 
-Emitted when the watcher detects an anomaly on a well.
+### Well
 
 ```json
 {
-  "session_id": "a1b2c3d4",
-  "well_id": "WELL-00019",
-  "display_id": "Delta-19",
-  "t": "2012-06-02T20:59:00",
-  "reason": "p_hydrate >= 0.5 for 3+ minutes",
-  "score": 0.72,
-  "incident_id": "WELL-00019_34"
+  "id": "WELL-00019", "name": "Well 19", "status": "normal|watch|attention|unavailable",
+  "source_file": "WELL-00019_20120601165020.parquet", "source_timestamp": "2012-06-02T22:34:00",
+  "quality": {"status": "good|degraded|unavailable", "summary": "…", "missing": [], "invalid": [], "unchanged": []},
+  "prediction": {"scores": {"normal": 0.1, "hydrate": 0.85, "lookalike": 0.05}, "model_id": "fleet-…",
+                 "threshold": 0.7, "persistence_minutes": 10, "alarm_streak": 4, "alarm_active": false},
+  "frames": [{"t": "…", "elapsed_seconds": 2340, "sensors": {"P-PDG": 251.2, "…": null}, "risk_score": 0.85}],
+  "incident": {"id": "…", "acknowledged": false, "completed": false, "opened_at": "…", "note": "",
+               "checks": {}, "condition_cleared": false} ,
+  "assessment": {"summary": "…", "evidence": ["…"], "next_step": "…", "source": "rules|live", "uncertainty": "…",
+                 "category": "…", "checks": [{"id": "…", "label": "…", "reason": "…", "status": "pending", "definition": "…"}],
+                 "tools": [{"name": "sensor_quality", "status": "done", "summary": "…"}], "recheck_minutes": 15},
+  "investigation": "idle|queued|running|complete|unavailable", "activity": "…",
+  "last_assessed": "…", "next_check": "…",
+  "timeline": [{"id": "…", "kind": "detected|seen|checked|observation|review_completed|recheck|recovered", "at": "…", "recorded_at": "…", "summary": "…"}],
+  "followup": {"last_checked_at": "…", "next_check_at": "…", "trigger": "…", "change_summary": "…", "before": {}, "after": {}}
 }
 ```
 
-### `fleet_tool_call`
+- `frames`: the last 240 observed minutes (30 warm-up minutes precede `elapsed_seconds` 0).
+- `prediction` is `null` until the first scored minute. Scores are uncalibrated model outputs.
+- Live LLM assessments add `playbook_refs` (BM25 playbook document ids).
 
-Emitted when the agent calls a tool during investigation.
+### `POST /api/fleet/sessions/{id}/control`
 
 ```json
-{
-  "session_id": "a1b2c3d4",
-  "well_id": "WELL-00019",
-  "display_id": "Delta-19",
-  "t": "2012-06-02T20:59:00",
-  "call_id": "sys_get_window",
-  "tool": "get_window",
-  "args": {"minutes": 60},
-  "requested_by": "system"
-}
+{"action": "pause|resume|step|cancel|speed|llm", "speed": 30, "use_llm": true}
 ```
 
-### `fleet_tool_result`
+- `step` (only while paused): advance every well one source minute and finish its queued reviews;
+  the run stays paused.
+- `speed` requires `speed`; `llm` requires `use_llm` and toggles LLM investigations mid-run (still
+  falls back to rules without a provider).
+- Unknown actions (including the removed `inject`, `next_moment`, `mode`) → 422.
+  Invalid state (e.g. stepping while running, controlling an ended run) → 409.
 
-Emitted when a tool returns results.
+### `POST /api/fleet/sessions/{id}/incidents/{well}/actions`
 
 ```json
-{
-  "session_id": "a1b2c3d4",
-  "well_id": "WELL-00019",
-  "display_id": "Delta-19",
-  "t": "2012-06-02T20:59:00",
-  "call_id": "sys_get_window",
-  "tool": "get_window",
-  "result": {"available": true, "source": "replay_data", "...": "..."},
-  "requested_by": "system"
-}
+{"action": "acknowledge|observation|complete|check|recheck", "note": "…", "check_id": "…",
+ "result": "confirmed|not_confirmed|unavailable", "incident_id": "…", "check_definition": "…"}
 ```
 
-### `fleet_assessment`
+Operator reports are recorded as human reports, never ground truth; they queue a re-review but
+cannot clear a sensor-driven alarm. Validation failures (stale incident, changed check, no incident) → 422.
 
-Emitted after agent investigation completes for a well.
+### `GET /api/fleet/sessions/{id}/events?after=N`
+
+Server-sent events. Each message:
+
+```
+id: 58
+event: fleet
+data: {"id": 58, "type": "snapshot", "payload": <snapshot>}
+```
+
+Resume with `?after=<last id>` or the `Last-Event-ID` header; a cursor ahead of the run → 422.
+A `: heartbeat` comment is sent every 15 s; the stream ends after a terminal status.
+
+### `GET /api/scores`
 
 ```json
-{
-  "session_id": "a1b2c3d4",
-  "well_id": "WELL-00019",
-  "display_id": "Delta-19",
-  "incident_id": "WELL-00019_34",
-  "decision": "ALERT",
-  "category": "review_now",
-  "confidence": 0.82,
-  "diagnosis": "hydrate_production_line",
-  "brief": "Pressure and temperature both declining. 65% hydrate probability.",
-  "next_action": "",
-  "next_check_minute": null,
-  "uncertainty": "",
-  "evidence_refs": [
-    {"tool": "classify_event", "summary": "p_hydrate=0.65"},
-    {"tool": "hydrate_margin", "summary": "margin=-1.3C (danger)"}
-  ],
-  "playbook_refs": ["hydrate_response"],
-  "source": "agent"
-}
+{"rows": [{"name": "B0", "description": "Always normal — no detection", "caught": 0, "total_events": 12,
+           "missed": 12, "false_alarms_per_day": 0.0, "mean_lead_time_min": null,
+           "misdiagnosis_rate": 0.0, "notes": "…"}]}
 ```
 
-### `fleet_status`
-
-Emitted after each tick and after investigations. Contains the global priority list.
-
-```json
-{
-  "session_id": "a1b2c3d4",
-  "held": false,
-  "reason": "",
-  "current_minute": 34,
-  "priority_list": [
-    {
-      "well_id": "WELL-00019",
-      "display_id": "Delta-19",
-      "category": "review_now",
-      "priority_rank": 1,
-      "headline": "Hydrate forming detected. Recommend inhibitor injection.",
-      "score": 0.82,
-      "unacknowledged": true,
-      "next_check_minute": null
-    },
-    {
-      "well_id": "WELL-00006",
-      "display_id": "Charlie-6",
-      "category": "normal",
-      "priority_rank": 2,
-      "headline": "Normal operation",
-      "score": 0.0,
-      "unacknowledged": false,
-      "next_check_minute": null
-    }
-  ],
-  "counters": {
-    "needs_review": 1,
-    "unacknowledged": 1,
-    "reliable_feeds": 4,
-    "checks_due": 0
-  }
-}
-```
-
-### `fleet_end`
-
-Emitted when all wells have finished or the session ends.
-
-```json
-{
-  "session_id": "a1b2c3d4",
-  "total_minutes": 180,
-  "llm_attempts_used": 3
-}
-```
-
----
-
-## Priority Categories
-
-| Category | Condition | Color suggestion |
-|----------|-----------|-----------------|
-| `review_now` | score >= 0.7 or ALERT decision | Red |
-| `investigate` | score >= 0.45 or WATCH decision | Orange |
-| `watch` | score >= 0.2 | Yellow |
-| `normal` | everything else | Green |
-
-## Sort Order
-
-Within each category, wells are sorted by:
-1. Highest score first
-2. Longest time unacknowledged
-3. Alphabetical by well_id (stable tiebreaker)
+Rows are in file order (B0, B1, B1-revised, M1, M3); empty cells are `null`. 404 if `results/summary.csv`
+has not been generated (`python eval.py`).

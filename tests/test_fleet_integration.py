@@ -1,43 +1,96 @@
-"""Tests for Div's integration into Mico's fleet: LLM pool transport + RAG playbook.
+"""Div's integration into the fleet: provider-pool transport, live investigations and the RAG playbook.
 
-Uses MockLLMClient — no API key needed, no network.
+Provider calls are mocked at ProviderPool.chat — no API key value is used and no network is touched.
 """
 import asyncio
 import json
-import os
-
-os.environ["LLM_MODE"] = "mock"
-os.environ.pop("OPENROUTER_API_KEY", None)
-os.environ.pop("GEMINI_API_KEY", None)
 
 import pytest
-from unittest.mock import patch, MagicMock
 
 from src.fleet_llm import (
-    _tool, _fallback, _validate, _extract_playbook_refs,
+    _tool, _fallback, _extract_playbook_refs,
     ASSESSMENT_SCHEMA, investigate,
 )
-from src.llm import make_fleet_transport, MockLLMClient, LLMResponse, ToolCall
+from src import llm
+from src.llm import make_fleet_transport, LLMResponse, ToolCall
+
+
+def pool_reply(*calls, model="llama-3.3-70b-versatile"):
+    return LLMResponse(content=None, tool_calls=[ToolCall(id=f"call-{i}", name=name, arguments=args) for i, (name, args) in enumerate(calls)],
+                       usage={"prompt_tokens": 40, "completion_tokens": 10, "total_tokens": 50}, model=model, provider="groq")
 
 
 class TestMakeFleetTransport:
-    """4a: LLM pool transport adapter."""
+    """LLM pool transport adapter."""
 
-    def test_mock_mode_returns_none(self):
-        """In mock mode, transport=None so fleet_llm uses deterministic fallback."""
-        with patch.dict(os.environ, {"LLM_MODE": "mock"}):
-            transport = make_fleet_transport()
-            assert transport is None
+    def test_mock_mode_returns_none(self, monkeypatch):
+        monkeypatch.setenv("GROQ_API_KEY", "test-only")
+        monkeypatch.setenv("LLM_MODE", "mock")
+        assert make_fleet_transport() is None
+        assert llm.configured_providers() == []
 
     def test_no_providers_returns_none(self):
-        """When no API keys are set, transport=None."""
-        env = {"LLM_MODE": "live", "GEMINI_API_KEY": "", "GROQ_API_KEY": "", "OPENROUTER_API_KEY": ""}
-        with patch.dict(os.environ, env, clear=False):
-            from src.llm import reset_provider_pool
-            reset_provider_pool()
-            transport = make_fleet_transport()
-            assert transport is None
-            reset_provider_pool()
+        assert make_fleet_transport() is None
+
+    def test_transport_converts_pool_response_to_openai_envelope(self, monkeypatch):
+        monkeypatch.setenv("GROQ_API_KEY", "test-only")
+        seen = []
+        def chat(self, **kwargs):
+            seen.append(kwargs)
+            return pool_reply(("search_playbook", {"query": "hydrate"}))
+        monkeypatch.setattr(llm.ProviderPool, "chat", chat)
+        transport = make_fleet_transport()
+        forced = {"type": "function", "function": {"name": "submit_assessment"}}
+        reply = asyncio.run(transport({"messages": [{"role": "user", "content": "x"}], "tools": [], "tool_choice": forced}, 5))
+        assert seen[0]["tool_choice"] == forced
+        assert reply["model"] == "llama-3.3-70b-versatile" and reply["provider"] == "groq"
+        call = reply["choices"][0]["message"]["tool_calls"][0]
+        assert call["function"]["name"] == "search_playbook"
+        assert json.loads(call["function"]["arguments"]) == {"query": "hydrate"}
+        assert reply["usage"]["cost"] == 0
+
+    def test_exhausted_pool_raises_provider_failure(self, monkeypatch):
+        from src.fleet_llm import ProviderFailure
+        monkeypatch.setenv("GEMINI_API_KEY", "test-only")
+        monkeypatch.setattr(llm.ProviderPool, "chat", lambda self, **kw: LLMResponse(None, [], {}, model="exhausted", provider="all"))
+        with pytest.raises(ProviderFailure):
+            asyncio.run(make_fleet_transport()({"messages": []}, 5))
+
+
+def test_use_llm_session_runs_live_investigation_through_provider_pool(monkeypatch):
+    """use_llm=True + configured provider: the fleet uses the pool transport, BM25 playbook and validation."""
+    from backend import fleet
+    monkeypatch.setenv("GROQ_API_KEY", "test-only")
+    assessment = {"status": "attention", "diagnosis": "hydrate_suspected", "brief": "Model risk and pressure evidence support a hydrate review.",
+                  "action": "review_hydrate", "recheck_minutes": 5, "evidence_ids": ["E1", "E2", "E3", "E4"],
+                  "alternative": "A restriction remains possible.", "missing_evidence": []}
+    planned = [pool_reply(("search_playbook", {"query": "hydrate review"})), pool_reply(("submit_assessment", assessment))]
+    monkeypatch.setattr(llm.ProviderPool, "chat", lambda self, **kw: planned.pop(0))
+    fleet.SESSIONS.clear(); fleet.ATTEMPTS.clear(); fleet.PROVIDER_CIRCUIT.update(until=0.0, reason="")
+
+    async def scenario():
+        session = fleet.FleetSession(use_llm=True)
+        fleet.SESSIONS[session.id] = session
+        assert session.snapshot()["use_llm"] is True and session.snapshot()["llm_providers"] == ["groq"]
+        await session.prepare()
+        for _ in range(40):
+            session.advance()
+        await session.investigate_well("WELL-00019")
+        return session
+
+    session = asyncio.run(scenario())
+    well = session.wells["WELL-00019"]
+    assert well["status"] == "attention"
+    assert well["investigation"] == "complete"
+    assert well["assessment"]["source"] == "live"
+    assert well["assessment"]["summary"].startswith("Model risk")
+    assert well["assessment"]["playbook_refs"]
+    assert well["assessment"]["checks"]
+    assert session.snapshot()["agent_mode"] == "live"
+    assert session.requests_used == 2
+    result = next(e["result"] for e in reversed(session.audit) if e["kind"] == "assessment" and "result" in e)
+    assert result["metadata"]["model"] == "llama-3.3-70b-versatile" and result["metadata"]["provider"] == "groq"
+    fleet.SESSIONS.clear(); fleet.ATTEMPTS.clear()
 
 
 class TestSearchPlaybookRAG:

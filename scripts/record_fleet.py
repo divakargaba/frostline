@@ -3,7 +3,7 @@
 
 Usage:
     python scripts/record_fleet.py              # rules-only
-    LLM_MODE=live python scripts/record_fleet.py  # with LLM (needs GEMINI_API_KEY)
+    USE_LLM=1 python scripts/record_fleet.py    # LLM investigations (needs a provider key in .env)
 
 Output: data/demo/fleet-recording-<session_id>.json
 """
@@ -13,16 +13,14 @@ import os
 import sys
 import time
 
-os.environ.setdefault("LLM_MODE", "mock")
 
 
 async def main():
     from backend.fleet import FleetSession, safe
 
-    use_llm = os.environ.get("LLM_MODE") == "live"
-    session = FleetSession(speed=6000, use_llm=use_llm, mode="continuous")
+    session = FleetSession(speed=6000, use_llm=os.environ.get("USE_LLM") == "1")
     print(f"Session: {session.id}")
-    print(f"LLM: {'live' if use_llm else 'rules-only'}")
+    print(f"LLM: {'on (' + ', '.join(session.caps['llm_providers']) + ')' if session.use_llm else 'rules-only'}")
     print(f"Wells: {list(session.wells.keys())}")
 
     start = time.time()
@@ -33,7 +31,7 @@ async def main():
     print(f"\nCompleted in {elapsed:.1f}s, {snap['index']}/{snap['total']} minutes")
 
     for w in snap["wells"]:
-        print(f"  {w['well_id']}: status={w['status']}, investigation={w['investigation']}")
+        print(f"  {w['id']}: status={w['status']}, investigation={w['investigation']}")
 
     # Export
     os.makedirs("data/demo", exist_ok=True)
